@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" width="960" height="440" font-family="Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="960" height="440" fill="#ffffff"/>
+<text x="78" y="26" font-size="17" font-weight="600" fill="#1a1a1a">Overall success rate during the incident, by traffic volume</text>
+<line x1="78" y1="382.0" x2="770" y2="382.0" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="386.0" font-size="11" fill="#666" text-anchor="end">0.913</text>
+<line x1="78" y1="314.8" x2="770" y2="314.8" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="318.8" font-size="11" fill="#666" text-anchor="end">0.918</text>
+<line x1="78" y1="247.6" x2="770" y2="247.6" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="251.6" font-size="11" fill="#666" text-anchor="end">0.923</text>
+<line x1="78" y1="180.4" x2="770" y2="180.4" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="184.4" font-size="11" fill="#666" text-anchor="end">0.928</text>
+<line x1="78" y1="113.2" x2="770" y2="113.2" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="117.2" font-size="11" fill="#666" text-anchor="end">0.933</text>
+<line x1="78" y1="46.0" x2="770" y2="46.0" stroke="#e6e6e6" stroke-width="1"/>
+<text x="68" y="50.0" font-size="11" fill="#666" text-anchor="end">0.937</text>
+<text x="78.0" y="402.0" font-size="11" fill="#666" text-anchor="middle">0</text>
+<text x="308.7" y="402.0" font-size="11" fill="#666" text-anchor="middle">1</text>
+<text x="539.3" y="402.0" font-size="11" fill="#666" text-anchor="middle">2</text>
+<text x="770.0" y="402.0" font-size="11" fill="#666" text-anchor="middle">3</text>
+<line x1="78" y1="382" x2="770" y2="382" stroke="#999"/>
+<line x1="78" y1="382" x2="78" y2="46" stroke="#999"/>
+<text x="424" y="426" font-size="12" fill="#444" text-anchor="middle">transactions over 2 days: 25k / 50k / 100k / 200k</text>
+<text x="20" y="214" font-size="12" fill="#444" text-anchor="middle" transform="rotate(-90 20 214)">success rate</text>
+<polyline points="78.0,314.7 308.7,261.2 539.3,326.0 770.0,264.0" fill="none" stroke="#4C78A8" stroke-width="1.8" stroke-linejoin="round"/>
+<line x1="788" y1="54" x2="812" y2="54" stroke="#4C78A8" stroke-width="3"/>
+<text x="818" y="58" font-size="12" fill="#333">flat</text>
+<polyline points="78.0,159.8 308.7,117.5 539.3,148.5 770.0,102.0" fill="none" stroke="#F58518" stroke-width="1.8" stroke-linejoin="round"/>
+<line x1="788" y1="76" x2="812" y2="76" stroke="#F58518" stroke-width="3"/>
+<text x="818" y="80" font-size="12" fill="#333">contextual</text>
+<polyline points="78.0,210.5 308.7,118.9 539.3,190.8 770.0,128.8" fill="none" stroke="#54A24B" stroke-width="1.8" stroke-linejoin="round"/>
+<line x1="788" y1="98" x2="812" y2="98" stroke="#54A24B" stroke-width="3"/>
+<text x="818" y="102" font-size="12" fill="#333">contextual-nopool</text>
+<polyline points="78.0,258.4 308.7,217.5 539.3,240.1 770.0,176.7" fill="none" stroke="#E45756" stroke-width="1.8" stroke-linejoin="round"/>
+<line x1="788" y1="120" x2="812" y2="120" stroke="#E45756" stroke-width="3"/>
+<text x="818" y="124" font-size="12" fill="#333">closed-loop</text>
+</svg>
