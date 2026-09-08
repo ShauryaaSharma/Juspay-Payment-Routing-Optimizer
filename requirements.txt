@@ -1,0 +1,9 @@
+numpy>=1.24
+pytest>=7.0
+
+# Optional extras. The project runs fully without them:
+#   - without `anthropic`, the agent uses a deterministic baseline policy
+#   - without `psycopg`, traces fall back to the JSONL backend
+#
+# anthropic>=1.0
+# psycopg[binary]>=3.1

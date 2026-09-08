@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Generated outputs. Two charts are kept because the README embeds them.
+results/*.svg
+results/*.csv
+results/*.json
+results/eval_cache/
+!results/03_rolling_sr.svg
+!results/07_closed_loop.svg
+!results/08_contextual_vs_agent.svg
+# The regression gate compares against this; CI needs it in the repo.
+!results/eval_baseline.json
+
+# Secrets and local config. .env.example is the committed documentation.
+.env
+.env.local
+
+# Trace output
+results/traces.jsonl
+results/memory.json
