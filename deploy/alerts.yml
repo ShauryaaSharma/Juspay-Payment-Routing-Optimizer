@@ -1,0 +1,40 @@
+# Alert rules worth having on a router like this. Not wired into the compose
+# stack by default; they document what you would page on.
+groups:
+  - name: payment-router
+    rules:
+      - alert: RoutingDecisionSlow
+        # p99 above 5ms means the decision is eating a real share of the
+        # end-to-end budget, long before it threatens the 100ms ceiling.
+        expr: histogram_quantile(0.99, rate(routing_decision_duration_seconds_bucket[5m])) > 0.005
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Routing decision p99 above 5ms"
+
+      - alert: SuccessRateDrop
+        expr: |
+          sum(rate(routing_decisions_total{outcome="success"}[10m]))
+          / sum(rate(routing_decisions_total[10m])) < 0.90
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Fleet success rate below 90% for 10 minutes"
+
+      - alert: ConstraintsNeverExpiring
+        # A count that climbs and never falls means TTLs are not being honoured,
+        # and the router is losing capacity it will never get back.
+        expr: min_over_time(routing_constraints_active[6h]) > 5
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "Routing constraints are accumulating without expiring"
+
+      - alert: InvestigationsFailing
+        expr: |
+          sum(rate(agent_investigations_total{stop_reason!="completed"}[30m]))
+          / sum(rate(agent_investigations_total[30m])) > 0.2
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Over 20% of investigations are ending without a diagnosis"

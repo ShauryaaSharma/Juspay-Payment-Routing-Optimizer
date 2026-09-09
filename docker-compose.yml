@@ -1,0 +1,106 @@
+# The full production shape, locally.
+#
+#   docker compose up -d
+#   curl -s localhost:8000/health | python -m json.tool
+#
+# Every backend here is optional to the router. Stop Redis, Kafka and ClickHouse
+# and the service still starts and still routes -- it keeps state in memory and
+# drops events. That is deliberate: a shared-state outage should cost
+# persistence, not availability, and it is the same graceful-degradation rule
+# the rest of the project follows.
+
+services:
+  router:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: routing.outcomes
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_TABLE: routing_outcomes
+      # Uncomment to enable the cold path. Without it the agent falls back to
+      # the deterministic baseline policy and nothing breaks.
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      TRACE_BACKEND: jsonl
+      TRACE_PATH: /tmp/traces.jsonl
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+    restart: unless-stopped
+
+  # Routing constraints (TTL keys, shared across replicas) and periodic
+  # posterior snapshots. Not on the hot read path -- see service/state.py.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Kafka API without the JVM or ZooKeeper. Durable fan-out for outcome events:
+  # posterior replication, analytics, and anything added later read the same
+  # topic without the router knowing.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 512M
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  # OLAP store for off-policy evaluation. Bandit logs are append-only, large,
+  # and queried by time range grouped by gateway -- columnar is the right shape,
+  # and it keeps analytics scans away from the transactional trace store.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    ports:
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - router
+
+volumes:
+  redis-data:
+  redpanda-data:
+  clickhouse-data:

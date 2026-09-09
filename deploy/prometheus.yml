@@ -1,0 +1,14 @@
+# Scrapes the router's /metrics endpoint. The interesting series is
+# routing_decision_duration_seconds, whose buckets are dense below 10ms because
+# that is the region a routing decision has to live in.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: payment-router
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["router:8000"]
+        labels:
+          service: payment-routing-optimizer
