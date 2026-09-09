@@ -208,6 +208,11 @@ class TraceStore:
 
     def __init__(self, config: TraceSettings | None = None) -> None:
         self.config = config or settings().traces
+        self._langfuse = None
+        if self.config.backend == "langfuse":
+            from .langfuse_sink import LangfuseSink
+
+            self._langfuse = LangfuseSink(self.config)
         self.written = 0
         self.failures = 0
         self.last_error: str | None = None
@@ -218,6 +223,8 @@ class TraceStore:
 
     @property
     def target(self) -> str:
+        if self._langfuse is not None:
+            return self._langfuse.target
         if self.config.backend == "postgres":
             return redact_dsn(self.config.dsn) + f"/{self.config.table}"
         if self.config.backend == "jsonl":
@@ -228,7 +235,13 @@ class TraceStore:
         if not self.config.enabled:
             return False
         try:
-            if self.config.backend == "jsonl":
+            if self.config.backend == "langfuse":
+                if not self._langfuse.write(record):
+                    # The sink already counted and warned; do not double-count.
+                    self.failures += 1
+                    self.last_error = self._langfuse.last_error
+                    return False
+            elif self.config.backend == "jsonl":
                 self._write_jsonl(record)
             else:
                 self._write_postgres(record)
@@ -245,6 +258,12 @@ class TraceStore:
                 )
             return False
 
+    def auth_check(self) -> tuple[bool, str]:
+        """Verify the backend accepts writes, without writing a real trace."""
+        if self._langfuse is not None:
+            return self._langfuse.auth_check()
+        return True, f"backend {self.config.backend!r} needs no auth check"
+
     def ensure_schema(self) -> str:
         """Create the Postgres table and indexes. No-op for other backends."""
         if self.config.backend != "postgres":
@@ -256,6 +275,11 @@ class TraceStore:
         return f"schema ready at {self.target}"
 
     def close(self) -> None:
+        if self._langfuse is not None:
+            # Langfuse batches in a background thread; a short-lived script
+            # exits before the queue drains unless it is flushed.
+            self._langfuse.flush()
+            self._langfuse.close()
         if self._conn is not None:
             try:
                 self._conn.close()

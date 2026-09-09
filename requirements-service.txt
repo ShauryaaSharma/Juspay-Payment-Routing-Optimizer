@@ -10,3 +10,9 @@ pydantic>=2.0
 # ClickHouse needs no client library; the sink posts to its HTTP interface.
 redis>=5.0
 confluent-kafka>=2.3
+
+# Observability and prompt management. Both optional:
+#   langfuse   -> traces fall back to JSONL or Postgres
+#   langsmith  -> prompts fall back to the git registry in src/agent/prompts.py
+langfuse>=3.0
+langsmith>=0.1

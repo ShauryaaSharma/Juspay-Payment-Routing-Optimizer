@@ -172,6 +172,13 @@ class TraceSettings:
     dsn: str | None = None
     table: str = "agent_traces"
     include_tool_results: bool = True
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    # Defaults to Langfuse Cloud. Point it at your own deployment for data
+    # residency -- payment telemetry under RBI localisation cannot leave India,
+    # and self-hosting is the reason Langfuse was chosen over LangSmith here.
+    langfuse_host: str | None = None
+    langfuse_environment: str | None = None
     # Seconds to wait for a database connection. Deliberately short: a trace
     # store is observability, and an unreachable database must degrade to "no
     # traces" in seconds rather than stalling an investigation behind libpq's
@@ -181,14 +188,29 @@ class TraceSettings:
     @classmethod
     def from_env(cls) -> "TraceSettings":
         dsn = _opt("TRACE_DSN") or _opt("DATABASE_URL")
-        default_backend = "postgres" if dsn else "jsonl"
+        public = _opt("LANGFUSE_PUBLIC_KEY")
+        secret = _opt("LANGFUSE_SECRET_KEY")
+        # Precedence: Langfuse keys, then a DSN, then local files. Configuring a
+        # backend and silently not using it is the more surprising outcome.
+        if public and secret:
+            default_backend = "langfuse"
+        elif dsn:
+            default_backend = "postgres"
+        else:
+            default_backend = "jsonl"
         backend = _str("TRACE_BACKEND", default_backend).lower()
-        if backend not in {"none", "jsonl", "postgres"}:
+        if backend not in {"none", "jsonl", "postgres", "langfuse"}:
             raise ValueError(
-                f"TRACE_BACKEND must be one of none/jsonl/postgres, got {backend!r}"
+                "TRACE_BACKEND must be one of none/jsonl/postgres/langfuse, "
+                f"got {backend!r}"
             )
         if backend == "postgres" and not dsn:
             raise ValueError("TRACE_BACKEND=postgres requires TRACE_DSN (or DATABASE_URL)")
+        if backend == "langfuse" and not (public and secret):
+            raise ValueError(
+                "TRACE_BACKEND=langfuse requires LANGFUSE_PUBLIC_KEY and "
+                "LANGFUSE_SECRET_KEY"
+            )
         return cls(
             backend=backend,
             path=_str("TRACE_PATH", "results/traces.jsonl"),
@@ -196,11 +218,50 @@ class TraceSettings:
             table=_str("TRACE_TABLE", "agent_traces"),
             include_tool_results=_bool("TRACE_INCLUDE_TOOL_RESULTS", True),
             connect_timeout=_int("TRACE_CONNECT_TIMEOUT", 5),
+            langfuse_public_key=public,
+            langfuse_secret_key=secret,
+            langfuse_host=_opt("LANGFUSE_HOST"),
+            langfuse_environment=_opt("LANGFUSE_ENVIRONMENT"),
         )
 
     @property
     def enabled(self) -> bool:
         return self.backend != "none"
+
+
+@dataclass(frozen=True)
+class PromptSettings:
+    """Where prompts come from.
+
+    ``registry`` (default) reads the immutable versions in prompts.py, so the
+    prompt is part of the commit and the eval gate gates the thing that ran.
+    ``langsmith`` pulls from a hosted prompt, which allows editing without a
+    deploy and costs that guarantee -- pin ``AGENT_PROMPT_COMMIT`` to get it
+    back.
+    """
+
+    source: str = "registry"
+    identifier: str | None = None  # LangSmith prompt name
+    commit: str | None = None  # pinned commit hash; unpinned means "whatever is live"
+    api_key: str | None = None
+    endpoint: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "PromptSettings":
+        api_key = _opt("LANGSMITH_API_KEY") or _opt("LANGCHAIN_API_KEY")
+        default_source = "langsmith" if api_key and _opt("AGENT_PROMPT_IDENTIFIER") else "registry"
+        source = _str("AGENT_PROMPT_SOURCE", default_source).lower()
+        if source not in {"registry", "langsmith"}:
+            raise ValueError(
+                f"AGENT_PROMPT_SOURCE must be registry or langsmith, got {source!r}"
+            )
+        return cls(
+            source=source,
+            identifier=_opt("AGENT_PROMPT_IDENTIFIER"),
+            commit=_opt("AGENT_PROMPT_COMMIT"),
+            api_key=api_key,
+            endpoint=_opt("LANGSMITH_ENDPOINT"),
+        )
 
 
 @dataclass(frozen=True)
@@ -224,6 +285,7 @@ class Settings:
     loop: LoopSettings = field(default_factory=LoopSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     traces: TraceSettings = field(default_factory=TraceSettings)
+    prompts: PromptSettings = field(default_factory=PromptSettings)
     constraints: ConstraintSettings = field(default_factory=ConstraintSettings)
     prompt_version: str | None = None
     run_label: str | None = None
@@ -235,6 +297,7 @@ class Settings:
             loop=LoopSettings.from_env(),
             memory=MemorySettings.from_env(),
             traces=TraceSettings.from_env(),
+            prompts=PromptSettings.from_env(),
             constraints=ConstraintSettings.from_env(),
             prompt_version=_opt("AGENT_PROMPT_VERSION"),
             run_label=_opt("AGENT_RUN_LABEL"),
@@ -253,9 +316,21 @@ class Settings:
             "memory_enabled": self.memory.enabled,
             "max_steps": self.loop.max_steps,
             "trace_backend": self.traces.backend,
-            "trace_target": redact_dsn(self.traces.dsn) if self.traces.dsn else self.traces.path,
+            "trace_target": self._trace_target(),
+            "prompt_source": self.prompts.source,
+            "prompt_identifier": self.prompts.identifier,
+            "prompt_commit": self.prompts.commit,
             "run_label": self.run_label,
         }
+
+
+    def _trace_target(self) -> str:
+        """Loggable trace destination. Never a credential."""
+        if self.traces.backend == "langfuse":
+            return self.traces.langfuse_host or "https://cloud.langfuse.com"
+        if self.traces.dsn:
+            return redact_dsn(self.traces.dsn)
+        return self.traces.path
 
 
 def redact_dsn(dsn: str | None) -> str:

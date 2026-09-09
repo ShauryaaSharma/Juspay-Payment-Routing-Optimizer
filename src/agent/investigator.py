@@ -18,6 +18,7 @@ from .llm import LLMClient
 from .loop import AgentLoop, LoopBudget
 from .memory import MemoryStore
 from .schemas import InvestigationResult
+from .prompt_source import PromptSource, ResolvedPrompt
 from .telemetry import TelemetryStore, format_clock
 from .tools import ToolDispatcher
 from .traces import TraceStore, build_record, new_session_id
@@ -66,12 +67,16 @@ class Investigator:
         config: InvestigatorConfig | None = None,
         traces: TraceStore | None = None,
         session_id: str | None = None,
+        prompt_source: PromptSource | None = None,
     ) -> None:
         self.store = store
         self.client = client
         self.memory = memory
         self.config = config or InvestigatorConfig()
-        self.prompt = prompts.get(self.config.prompt_version)
+        # Resolved rather than looked up: the prompt may come from LangSmith,
+        # and which source won has to be recorded on the trace.
+        self.prompt_source = prompt_source or PromptSource()
+        self.prompt: ResolvedPrompt = self.prompt_source.resolve(self.config.prompt_version)
         self.loop = AgentLoop(client, ToolDispatcher(store), self.config.budget)
         self.traces = traces
         self.session_id = session_id or new_session_id()
@@ -114,6 +119,10 @@ class Investigator:
                 prompt_version=self.prompt.version,
                 memory_enabled=self.memory is not None and self.config.use_memory,
                 include_tool_results=self.traces.config.include_tool_results,
+                # Provenance travels with the trace, so a stored run always
+                # says which prompt text produced it -- the property a hosted
+                # prompt store otherwise takes away.
+                extra=self.prompt.describe(),
             ))
         return result
 
@@ -122,6 +131,7 @@ class Investigator:
         return {
             "provider": getattr(self.client, "name", type(self.client).__name__),
             "prompt_version": self.prompt.version,
+            "prompt_source": self.prompt.source,
             "memory": self.config.use_memory and self.memory is not None,
             "max_steps": self.loop.budget.max_steps,
             "max_tool_calls": self.loop.budget.max_tool_calls,

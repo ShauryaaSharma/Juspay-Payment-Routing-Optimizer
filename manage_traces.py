@@ -62,6 +62,11 @@ def main() -> int:
         return 0
 
     if args.command == "check":
+        ok, message = store.auth_check()
+        print(f"auth    : {message}")
+        if not ok:
+            store.close()
+            return 1
         record = TraceRecord(
             trace_id=uuid.uuid4().hex,
             session_id="connectivity-check",
@@ -79,6 +84,10 @@ def main() -> int:
         return 1
 
     # tail
+    if cfg.traces.backend == "langfuse":
+        print("`tail` reads the JSONL backend only. Langfuse traces are browsable")
+        print(f"at {store.target} -- filter by session_id or case_id.")
+        return 1
     if cfg.traces.backend != "jsonl":
         print("`tail` reads the JSONL backend only. For Postgres, query directly:")
         print(f"  SELECT created_at, case_id, scope, tool_calls, cost_usd")

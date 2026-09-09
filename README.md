@@ -13,7 +13,7 @@ router honours on the next transaction.**
 | **+110 bps** | for the issuers a flat bandit would punish while fixing a broken one |
 | **75%** | ground-truth eval score for a no-model baseline — headroom kept on purpose |
 | **11µs** | p50 routing decision latency, ~2,400x inside a 100ms budget |
-| **177 tests** | numpy-only library · optional service layer · CI gate on every push |
+| **199 tests** | numpy-only library · optional service layer · CI gate on every push |
 
 ![Realised success rate over one simulated week](results/03_rolling_sr.svg)
 
@@ -165,8 +165,8 @@ routes, keeping state in memory and dropping events.
 | Model access | Anthropic SDK, `claude-opus-5`, adaptive thinking + structured outputs | — |
 | Tool layer | 6 tools, `strict: true` JSON schemas | LangChain tools, MCP servers |
 | Memory + retrieval | Episodic/semantic store, IDF-weighted lexical recall | Pinecone, Weaviate, Chroma + embeddings |
-| Prompt management | Versioned immutable registry, A/B'd by the harness | LangSmith, PromptLayer |
-| Tracing | Own store: JSONL or Postgres, cost & latency per diagnosis | Langfuse, LangSmith, W&B Weave |
+| Prompt management | **LangSmith** when configured, falling back to a versioned registry in git | PromptLayer |
+| Tracing | **Langfuse** (trace trees), or JSONL / Postgres | LangSmith, W&B Weave |
 | Evaluation | Ground-truth harness, Brier calibration, CI regression gate | Braintrust, Promptfoo, DeepEval |
 | Off-policy evaluation | IPS / SNIPS / DM / DR, `src/ope.py` | Open Bandit Pipeline |
 | Charts | ~200-line SVG writer, `src/plotting.py` | matplotlib, plotly |
@@ -197,7 +197,7 @@ library at numpy-only is worth more than the sixty lines.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                 # 177 tests, ~30s
+python -m pytest -q                 # 199 tests, ~30s
 ```
 
 CI runs the suite on Python 3.11–3.13 and then runs the eval regression gate on
@@ -280,6 +280,38 @@ Traces earn their place for three reasons: a wrong diagnosis is almost
 impossible to explain from the answer alone; the best eval cases start life as
 real traces someone flagged; and cost-per-diagnosis tracked per prompt version
 is how you notice that a prompt edit tripled spend.
+
+### Langfuse and LangSmith
+
+Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` and traces go to Langfuse
+instead, as a tree rather than a flat row:
+
+```
+agent      one investigation
+├─ span    step 0
+│  └─ tool   get_fleet_health    (input: window, output: the JSON returned)
+├─ span    step 1
+│  └─ tool   segment_failures
+└─ generation  model call, with token usage so Langfuse costs it
+```
+
+That nesting is what a flat row cannot give you: opening a wrong diagnosis and
+seeing *which tool result the reasoning turned on*. Langfuse over LangSmith for
+this specifically because it self-hosts — payment telemetry under RBI
+localisation rules cannot go to a SaaS-only endpoint, and `LANGFUSE_HOST` is a
+one-line change.
+
+Prompts can come from **LangSmith** (`AGENT_PROMPT_SOURCE=langsmith`) instead of
+the registry in `src/agent/prompts.py`, which allows editing a prompt without a
+deploy.
+
+**That trade has a cost worth naming.** A prompt that changes without a code
+change means the eval gate no longer gates the prompt that actually ran: CI
+green on a commit stops implying "this prompt scores 75%" and starts implying
+"some prompt did, once". Three things keep it honest — `AGENT_PROMPT_COMMIT`
+pins an exact commit, the resolved source and commit hash are written onto every
+trace, and an unreachable LangSmith **falls back to the registry** rather than
+failing. Offline reproducibility is not negotiable, so resolution fails open.
 
 **Tracing never fails a run.** Writes are wrapped, failures counted and warned
 once. An unreachable database degrades to "no traces" within
@@ -873,6 +905,8 @@ service/api.py             FastAPI: /route (hot path), /investigate (cold path)
 service/state.py           Redis-backed constraints + posterior snapshots
 service/events.py          Kafka and ClickHouse sinks, both fail-soft
 service/metrics.py         Prometheus exposition format, written directly
+src/agent/langfuse_sink.py Langfuse backend: one trace tree per investigation
+src/agent/prompt_source.py LangSmith prompts, falling back to the git registry
 dsl/                       Haskell constraint DSL: parser, validator, CLI
 src/closed_loop.py         simulation that investigates and constrains itself
 
@@ -910,7 +944,7 @@ AGENTS.md                  conventions for AI coding agents working on this repo
 ## Testing
 
 ```bash
-python -m pytest -q        # 177 tests
+python -m pytest -q        # 199 tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs two jobs on every push:
@@ -940,6 +974,7 @@ edit that quietly breaks the hard cases fails the build instead of shipping.
 | `test_contextual.py` | Whether conditioning on issuer buys resolution a flat bandit cannot have. |
 | `test_ope.py` | Estimator unbiasedness against closed-form truth, and the failure modes. |
 | `test_service.py` | The HTTP surface, metrics format, and that every backend is optional. |
+| `test_observability.py` | The Langfuse trace tree, and that LangSmith fails open to the registry. |
 | `test_traces.py` | Config parsing, secret redaction, and that tracing fails soft. |
 
 Two tests exist specifically to catch the project fooling itself:
