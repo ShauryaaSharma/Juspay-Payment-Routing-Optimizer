@@ -12,7 +12,8 @@ router honours on the next transaction.**
 | **+323 bps** | success rate over a static weighted router, 3 seeds |
 | **+110 bps** | for the issuers a flat bandit would punish while fixing a broken one |
 | **75%** | ground-truth eval score for a no-model baseline — headroom kept on purpose |
-| **158 tests** | numpy-only · no API key required · CI runs the eval gate on every push |
+| **11µs** | p50 routing decision latency, ~2,400x inside a 100ms budget |
+| **177 tests** | numpy-only library · optional service layer · CI gate on every push |
 
 ![Realised success rate over one simulated week](results/03_rolling_sr.svg)
 
@@ -73,72 +74,122 @@ How the three layers line up with the work Juspay describes:
 
 ```mermaid
 flowchart TB
-    subgraph ENV["Simulated environment — src/gateways.py, src/simulator.py"]
-        FLEET["Gateway fleet: 5 gateways x 5 issuers<br/>diurnal drift, outages, issuer-scoped failures<br/>ground truth known, never exposed to the agent"]
+    subgraph HOT["HOT PATH — per transaction, microseconds"]
+        API["POST /route — service/api.py<br/>FastAPI · touches no network"]
+        BANDIT["Bandit strategies — src/routers/<br/>Thompson · UCB1 · eps-greedy · static<br/>PID-Thompson · contextual (gateway x issuer)"]
+        CONSTRAINT["Constraint layer — src/agent/constraints.py<br/>issuer-scoped · 2% canary · TTL"]
     end
 
-    subgraph ROUTING["Routing — src/routers/"]
-        BANDIT["Bandit strategies<br/>Thompson · UCB1 · eps-greedy · static<br/>PID-Thompson · contextual (per gateway x issuer)"]
-        CONSTRAINT["Constraint layer — src/agent/constraints.py<br/>issuer-scoped · 2% canary · TTL · refuses low confidence"]
-    end
-
-    subgraph AGENT["Investigation agent — src/agent/"]
-        LOOP["Agent loop — loop.py<br/>bounded · terminating · recoverable · answer-forcing"]
+    subgraph COLD["COLD PATH — per incident, seconds"]
+        LOOP["Agent loop — src/agent/loop.py<br/>bounded · terminating · recoverable"]
         TOOLS["6 read-only tools — tools.py<br/>strict JSON schemas over telemetry"]
         MEM["Memory — memory.py<br/>episodic + semantic, consolidated"]
-        PROMPT["Prompt registry — prompts.py<br/>immutable versions, v1 control vs v2"]
+        PROMPT["Prompt registry — prompts.py<br/>immutable versions, A/B'd"]
+    end
+
+    subgraph ENV["Environment — src/gateways.py, src/simulator.py"]
+        FLEET["Gateway fleet: 5 gateways x 5 issuers<br/>diurnal drift, outages, issuer-scoped failures<br/>ground truth never exposed to the agent"]
+    end
+
+    subgraph STATE["Shared state — service/state.py"]
+        REDIS["Redis<br/>constraints as TTL keys<br/>posterior snapshots (write-back, not write-through)"]
+    end
+
+    subgraph STREAM["Event path — service/events.py"]
+        KAFKA["Kafka / Redpanda<br/>outcome events + propensities"]
+        CH["ClickHouse<br/>OLAP store for off-policy evaluation"]
     end
 
     subgraph MEASURE["Measurement"]
-        EVALS["Ground-truth evals — evals/<br/>8 planted incidents · exact grading · CI gate"]
-        OPE["Off-policy evaluation — ope.py<br/>IPS · SNIPS · DM · DR + ESS diagnostics"]
+        EVALS["Ground-truth evals — evals/<br/>8 planted incidents · CI gate"]
+        OPE["Off-policy evaluation — ope.py<br/>IPS · SNIPS · DM · DR + ESS"]
+        PROM["Prometheus — service/metrics.py<br/>decision latency, SR, constraints"]
     end
 
-    subgraph OPS["Operations"]
+    subgraph GOV["Governance"]
+        DSL["Constraint DSL — dsl/ (Haskell)<br/>parse · type-check · emit JSON"]
         TRACE["Trace store — traces.py<br/>JSONL or Postgres, fails soft"]
         CONF["Config — config.py<br/>env-driven, secrets redacted"]
     end
 
-    FLEET -->|transactions| BANDIT
+    API --> CONSTRAINT
+    CONSTRAINT --> BANDIT
+    BANDIT -->|transactions| FLEET
+    FLEET -->|outcomes| KAFKA
+    KAFKA --> CH
+    CH -->|logged propensities| OPE
+    CONSTRAINT <-->|TTL keys| REDIS
+    BANDIT -.->|periodic snapshot| REDIS
+    API --> PROM
+
     BANDIT -->|"calibration residual spikes"| LOOP
     LOOP --> TOOLS
     TOOLS -->|"observable telemetry only"| FLEET
     MEM -.->|untrusted hypotheses| LOOP
     PROMPT -.-> LOOP
     LOOP -->|structured diagnosis| CONSTRAINT
-    CONSTRAINT -->|blocks gateway x issuer| BANDIT
     LOOP -->|every step, tool call, token| TRACE
     LOOP --> EVALS
-    BANDIT -->|logged propensities| OPE
-    CONF -.-> AGENT
+    DSL -->|validated constraints| CONSTRAINT
+    CONF -.-> COLD
     CONF -.-> TRACE
 ```
 
-### Stack, and what each piece replaces
+The split down the middle is the load-bearing idea. `/route` runs on every
+payment and must answer in microseconds, so it touches no network — the
+posterior is in process and constraints come from a locally refreshed cache.
+`/investigate` runs per incident, calls a language model, and takes seconds.
+They share a codebase here for demonstration; in production they are separate
+services with separate SLOs, because an agent that is slow is fine and a router
+that is slow is an outage.
 
-The project has **one runtime dependency: numpy.** That is a deliberate
-constraint — the whole system runs offline and reproducibly, and the interesting
-parts stay visible instead of being delegated to a framework. Every slot below
-is one a typical LLM stack fills with a library:
+### Stack
+
+**The library has one runtime dependency: numpy.** Every experiment, every
+benchmark and the whole eval suite run offline with nothing else installed.
+The service layer adds infrastructure on top, and **all of it is optional** —
+with no Redis, Kafka, ClickHouse or API key the service still starts and still
+routes, keeping state in memory and dropping events.
 
 | Slot | What this project uses | Common alternative |
 |---|---|---|
+| Numerics | NumPy | — |
+| HTTP service | FastAPI + Uvicorn, `service/api.py` | Flask, Litestar |
+| Shared state | Redis — TTL keys for constraints, write-back snapshots for posteriors | Aerospike, DynamoDB, an in-house KvDB |
+| Event stream | Kafka (Redpanda locally), `service/events.py` | Pulsar, Kinesis |
+| Analytics store | ClickHouse over its HTTP interface | Druid, BigQuery |
+| Metrics | Prometheus exposition format, written directly | `prometheus_client` |
+| Constraint language | **Haskell** DSL — parse, type-check, emit JSON (`dsl/`) | YAML plus runtime validation |
+| Packaging | Docker, multi-stage, non-root; Compose for the full stack | — |
 | Agent orchestration | Hand-written loop, `src/agent/loop.py` | LangGraph, CrewAI, the Anthropic SDK tool runner |
 | Model access | Anthropic SDK, `claude-opus-5`, adaptive thinking + structured outputs | — |
 | Tool layer | 6 tools, `strict: true` JSON schemas | LangChain tools, MCP servers |
-| Memory + retrieval | Episodic/semantic store with IDF-weighted lexical recall | Pinecone, Weaviate, Chroma + embeddings |
+| Memory + retrieval | Episodic/semantic store, IDF-weighted lexical recall | Pinecone, Weaviate, Chroma + embeddings |
 | Prompt management | Versioned immutable registry, A/B'd by the harness | LangSmith, PromptLayer |
-| Tracing / observability | Own store: JSONL or Postgres, cost & latency per diagnosis | Langfuse, LangSmith, W&B Weave |
+| Tracing | Own store: JSONL or Postgres, cost & latency per diagnosis | Langfuse, LangSmith, W&B Weave |
 | Evaluation | Ground-truth harness, Brier calibration, CI regression gate | Braintrust, Promptfoo, DeepEval |
 | Off-policy evaluation | IPS / SNIPS / DM / DR, `src/ope.py` | Open Bandit Pipeline |
 | Charts | ~200-line SVG writer, `src/plotting.py` | matplotlib, plotly |
 | CI | GitHub Actions: 3 Python versions + eval gate | — |
 
-The orchestration row is the one worth defending. The SDK's tool runner is the
-right default for most agents; it was skipped here because everything that
-actually pages someone lives in the parts it abstracts away — budget exhaustion
-mid-investigation, repeated tool errors, a duplicated call, an unparseable final
-answer. Those are the branches under test in `tests/test_agent_loop.py`.
+Three rows are worth defending, because in each case the obvious library was
+considered and declined.
+
+**Agent orchestration.** The SDK's tool runner is the right default for most
+agents. It was skipped because everything that actually pages someone lives in
+the parts it abstracts away — budget exhaustion mid-investigation, repeated
+tool errors, a duplicated call, an unparseable final answer. Those are the
+branches under test in `tests/test_agent_loop.py`, and behind a framework they
+are someone else's branches.
+
+**Memory retrieval.** A vector database would retrieve better. It would also
+make "does memory help?" inseparable from "is this embedding model good?", and
+the memory A/B exists to answer the first question. Lexical scoring keeps the
+experiment clean and adds no service dependency.
+
+**Metrics.** `prometheus_client` is one line of `requirements.txt`. The text
+exposition format is a documented, stable, sixty-line contract, and keeping the
+library at numpy-only is worth more than the sixty lines.
 
 ---
 
@@ -146,7 +197,7 @@ answer. Those are the branches under test in `tests/test_agent_loop.py`.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                 # 158 tests, ~30s
+python -m pytest -q                 # 177 tests, ~30s
 ```
 
 CI runs the suite on Python 3.11–3.13 and then runs the eval regression gate on
@@ -177,6 +228,14 @@ python run_evals.py --live                  # against claude-opus-5
 python close_loop.py                        # measures what closing the loop is worth
 python contextual_vs_agent.py               # was the agent even necessary?
 python run_ope.py                           # off-policy evaluation vs ground truth
+```
+
+**The service** (Docker, or bare with `pip install -r requirements-service.txt`)
+
+```bash
+docker compose up -d                        # router + Redis + Kafka + ClickHouse + Prometheus
+curl -s localhost:8000/health
+python bench_latency.py                     # decision latency vs the 100ms budget
 ```
 
 Charts are written to `results/` as dependency-free SVG.
@@ -678,6 +737,102 @@ you deploy today has to be stochastic. There is a test asserting exactly that.
 
 ---
 
+## Part 6 — Running it in production shape
+
+Everything above is a simulation you invoke from a script. This part makes it a
+service you can deploy, and measures the one thing the rest of the project never
+did: whether a routing decision is fast enough to be allowed to happen at all.
+
+```bash
+docker compose up -d
+curl -s localhost:8000/health | python -m json.tool
+```
+
+That brings up the router, Redis, Redpanda (the Kafka API without a JVM),
+ClickHouse and Prometheus. Stop any of them and the router keeps running.
+
+### Decision latency
+
+The JusTrust brief quotes a **100ms** budget. Until now nothing here measured
+the decision itself — every other number is about whether the router chooses
+*well*, not whether it chooses *fast*.
+
+```bash
+python bench_latency.py
+```
+
+| router | p50 | p95 | p99 | vs 100ms budget |
+|---|---|---|---|---|
+| static-weighted | 7.2µs | 11.5µs | 27.2µs | 3,676× |
+| epsilon-greedy | 9.9µs | 36.1µs | 67.3µs | 1,486× |
+| ucb1 | 12.6µs | 17.6µs | 40.0µs | 2,500× |
+| **thompson** | **10.7µs** | **14.8µs** | **41.7µs** | **2,398×** |
+| contextual-thompson | 13.9µs | 28.1µs | 57.1µs | 1,751× |
+
+Percentiles rather than a mean, because a mean hides the tail and the tail is
+what times out. Two caveats printed with the results rather than buried: this is
+the *decision only* — network, TLS and the downstream gateway call dominate any
+real end-to-end budget — and it is CPython on one core. The claim is not that
+Python is fast enough at 350M/day; it is that **the algorithm costs
+microseconds**, which makes a Go or Rust port a transport decision rather than
+an algorithmic one.
+
+### The hot path holds no network calls
+
+`POST /route` reads an in-process posterior and a locally refreshed constraint
+cache, then hands the outcome event to a fire-and-forget pipeline. Nothing in it
+can block on Redis, Kafka or ClickHouse.
+
+That constraint drove the state design. Constraints go into Redis as `SETEX`
+keys — low volume, natural TTL, visible to every replica, and a constraint that
+outlives its usefulness expires without a sweeper. **Posteriors do not.** They
+are read on every transaction, so a round trip per decision would be the entire
+budget; they are snapshotted periodically instead. That is a write-back cache,
+and it is the same shape as the in-house KvDB Juspay describes for this problem.
+
+It also closes a limitation this README used to list: constraints and posteriors
+now survive a restart.
+
+### Events carry propensities
+
+Every outcome event records **the probability the router assigned to its own
+choice**. That is the field nobody logs until it is too late — without it,
+[Part 5](#part-5--would-this-survive-contact-with-production)'s off-policy
+evaluation cannot run at all, and the logs only measure the policy that produced
+them. Kafka fans out; ClickHouse is the columnar store the estimators query.
+
+### A typed constraint language
+
+Constraints were ad-hoc Python dataclasses validated at runtime. `dsl/` moves
+most of that into a type system:
+
+```
+avoid PG-Delta when issuer HDFC ttl 8h canary 2% confidence 0.70
+```
+
+```bash
+routing-dsl check   constraints.route   # non-zero exit on the first bad line
+routing-dsl compile constraints.route   # emits JSON the router consumes
+```
+
+`Scope` carries its own payload, so an issuer-scoped constraint *without* an
+issuer cannot be constructed. `CanaryRate` is abstract with a smart constructor,
+so a rate outside `[0, 1)` is not representable rather than merely rejected.
+`check` exits non-zero, so it sits in CI as a gate the same way the eval gate
+does — a constraint file that does not parse should fail the build, not reach
+the router.
+
+Haskell because the job is a parser with invariants, which is what the language
+is for; `base` only, no megaparsec, so it builds with a bare GHC.
+
+**Verification status:** the library and CLI compile cleanly under `-Wall` on
+GHC 9.6 and were exercised end to end — the example file validates, the emitted
+JSON round-trips into the Python `RoutingConstraint` type, and an unknown
+gateway is rejected with a useful message. **The QuickCheck property suite in
+`dsl/test/Spec.hs` has not been run.** Run `cabal test` before relying on it.
+
+---
+
 ## What is measured, and what is not
 
 Stated plainly, because it is the first thing worth asking about.
@@ -713,6 +868,12 @@ src/simulator.py           runs a router over a fleet, per-transaction records
 src/metrics.py             regret, rolling SR, allocation, outage response
 src/plotting.py            SVG charts, no dependencies
 src/ope.py                 off-policy estimators: IPS, SNIPS, DM, DR + diagnostics
+
+service/api.py             FastAPI: /route (hot path), /investigate (cold path)
+service/state.py           Redis-backed constraints + posterior snapshots
+service/events.py          Kafka and ClickHouse sinks, both fail-soft
+service/metrics.py         Prometheus exposition format, written directly
+dsl/                       Haskell constraint DSL: parser, validator, CLI
 src/closed_loop.py         simulation that investigates and constrains itself
 
 src/agent/telemetry.py     the observable view the agent queries
@@ -734,6 +895,10 @@ close_loop.py              measures what closing the loop is worth
 contextual_vs_agent.py     contextual bandit vs. agent, swept over volume
 run_ope.py                 estimates policy value from logs, checked against truth
 manage_traces.py           trace store: config / init / check / tail
+bench_latency.py           routing decision latency, percentiles
+Dockerfile                 multi-stage, non-root
+docker-compose.yml         the whole stack locally
+deploy/                    Prometheus scrape config and alert rules
 .env.example               every environment variable, documented
 
 docs/TRACE_QUERIES.md      SQL cookbook for the trace store
@@ -745,7 +910,7 @@ AGENTS.md                  conventions for AI coding agents working on this repo
 ## Testing
 
 ```bash
-python -m pytest -q        # 158 tests
+python -m pytest -q        # 177 tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs two jobs on every push:
@@ -774,6 +939,7 @@ edit that quietly breaks the hard cases fails the build instead of shipping.
 | `test_constraints.py` | Mostly what the constraint layer must **refuse** to do. |
 | `test_contextual.py` | Whether conditioning on issuer buys resolution a flat bandit cannot have. |
 | `test_ope.py` | Estimator unbiasedness against closed-form truth, and the failure modes. |
+| `test_service.py` | The HTTP surface, metrics format, and that every backend is optional. |
 | `test_traces.py` | Config parsing, secret redaction, and that tracing fails soft. |
 
 Two tests exist specifically to catch the project fooling itself:
