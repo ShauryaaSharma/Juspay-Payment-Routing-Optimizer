@@ -1,0 +1,11 @@
+# Routing constraints, checked before they ever reach the router.
+#
+#   routing-dsl check   constraints.route
+#   routing-dsl compile constraints.route > constraints.json
+
+# PG-Delta declines HDFC cards while every other issuer converts on it fine.
+# Scoped to the broken path only, so the rest of its traffic stays put.
+avoid PG-Delta when issuer HDFC ttl 8h canary 2% confidence 0.70
+
+# A gateway-wide constraint: no issuer, so it applies to all traffic.
+avoid PG-Bravo ttl 30m canary 5% confidence 0.85

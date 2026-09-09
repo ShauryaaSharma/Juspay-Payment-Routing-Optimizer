@@ -1,0 +1,45 @@
+cabal-version:      2.4
+name:               routing-dsl
+version:            0.1.0.0
+synopsis:           A typed DSL for payment routing constraints
+description:
+  Parses and validates routing constraints for the payment router, emitting
+  JSON that the Python service consumes.
+  .
+  It exists to move constraint validity out of runtime checks and into the type
+  system. An issuer-scoped constraint without an issuer, or a canary rate
+  outside [0, 1), is not representable rather than merely rejected -- and the
+  checks that do need a value happen once, at parse time, instead of on every
+  routing decision.
+  .
+  The library depends on @base@ alone, so it builds with a bare GHC.
+license:            MIT
+author:             Shaurya Sharma
+build-type:         Simple
+extra-source-files: constraints.route
+
+library
+    exposed-modules:  Constraint.Types
+                    , Constraint.Parser
+    hs-source-dirs:   src
+    build-depends:    base >=4.14 && <5
+    default-language: Haskell2010
+    ghc-options:      -Wall
+
+executable routing-dsl
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    build-depends:    base >=4.14 && <5
+                    , routing-dsl
+    default-language: Haskell2010
+    ghc-options:      -Wall
+
+test-suite spec
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   test
+    build-depends:    base >=4.14 && <5
+                    , routing-dsl
+                    , QuickCheck >=2.14
+    default-language: Haskell2010
+    ghc-options:      -Wall
