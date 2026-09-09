@@ -153,6 +153,24 @@ class ContextualThompsonRouter(Router):
         winners = np.argmax(draws, axis=1)
         return np.bincount(winners, minlength=self.n_gateways) / n_samples
 
+    def decide(
+        self,
+        tick: int,
+        context: RoutingContext | None = None,
+        blocked: frozenset[int] = frozenset(),
+        n_samples: int = 64,
+        rng: np.random.Generator | None = None,
+    ) -> tuple[int, np.ndarray]:
+        """One draw serves both decision and propensity; see ThompsonRouter."""
+        rng = rng if rng is not None else np.random.default_rng(0)
+        alpha, beta = self._posterior(self._issuer_slot(context.issuer if context else None))
+        draws = rng.beta(alpha, beta, size=(n_samples + 1, self.n_gateways))
+        if blocked:
+            draws[:, list(blocked)] = -np.inf
+        gateway = int(np.argmax(draws[0]))
+        winners = np.argmax(draws[1:], axis=1)
+        return gateway, np.bincount(winners, minlength=self.n_gateways) / n_samples
+
     def update(self, outcome: Outcome) -> None:
         # Every outcome updates the pooled posterior, so the shrinkage target
         # stays current even for issuers that are rarely seen.

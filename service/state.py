@@ -103,7 +103,7 @@ class RedisConstraintStore(ConstraintStore):
         except Exception:
             self.degraded = True  # keep serving from the in-process copy
 
-    def _refresh(self) -> None:
+    def _refresh(self, tick: int) -> None:
         """Pull peers' constraints in, at most once per refresh window."""
         now = time.monotonic()
         if now - self._fetched_at < self.refresh_seconds:
@@ -116,6 +116,14 @@ class RedisConstraintStore(ConstraintStore):
         except Exception:
             self.degraded = True
             return
+
+        # Drop what has already expired before merging. `active()` filters
+        # expired constraints out of its *result* but nothing removed them from
+        # the list, so a long-running replica accumulated every constraint any
+        # peer ever wrote. Pruning needs the current tick -- an earlier version
+        # of this compared against max(expires_tick), which kept only the
+        # longest-lived constraint and silently discarded every other live one.
+        self.constraints = [c for c in self.constraints if c.expires_tick > tick]
 
         known = {(c.gateway, c.issuer) for c in self.constraints}
         for raw in payloads:
@@ -130,7 +138,7 @@ class RedisConstraintStore(ConstraintStore):
             self.constraints.append(RoutingConstraint(**data))
 
     def active(self, tick: int) -> list[RoutingConstraint]:
-        self._refresh()
+        self._refresh(tick)
         return super().active(tick)
 
 

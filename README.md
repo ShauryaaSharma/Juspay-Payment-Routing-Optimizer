@@ -13,7 +13,7 @@ router honours on the next transaction.**
 | **+110 bps** | for the issuers a flat bandit would punish while fixing a broken one |
 | **75%** | ground-truth eval score for a no-model baseline — headroom kept on purpose |
 | **11µs** | p50 routing decision latency, ~2,400x inside a 100ms budget |
-| **199 tests** | numpy-only library · optional service layer · CI gate on every push |
+| **210 tests** | numpy-only library · optional service layer · CI gate on every push |
 
 ![Realised success rate over one simulated week](results/03_rolling_sr.svg)
 
@@ -197,7 +197,7 @@ library at numpy-only is worth more than the sixty lines.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                 # 199 tests, ~30s
+python -m pytest -q                 # 210 tests, ~30s
 ```
 
 CI runs the suite on Python 3.11–3.13 and then runs the eval regression gate on
@@ -809,6 +809,31 @@ Python is fast enough at 350M/day; it is that **the algorithm costs
 microseconds**, which makes a Go or Rust port a transport decision rather than
 an algorithmic one.
 
+### What a review of this layer turned up
+
+Six defects, found by reading the code rather than by a failing test. Each now
+has a regression test in `tests/test_service_hardening.py`.
+
+| Defect | Why it mattered |
+|---|---|
+| Propensity computed in a **second pass**, costing 2.1x the decision itself — and measured *outside* the timed region | The latency reported to the caller understated a request by ~3x. `decide()` now serves both from one batched draw: **35% faster**, and honest |
+| That draw counted the decision sample in its own propensity | Biased the chosen arm's propensity up by ~1/n. Importance weights divide by it, so every off-policy estimate built on those logs would skew — invisibly |
+| Mutable state unguarded under FastAPI's **threadpool** | `_append_history` writes five lists; interleaved, they end at different lengths and a tick gets paired with someone else's outcome |
+| `urllib.parse` used but never imported | Worked only because `urllib.request` imports it transitively |
+| Expired constraints never left memory | `active()` filtered them from its *result*; the list grew with every constraint any peer ever wrote |
+| `/investigate` ignored `CONSTRAINT_*` settings, and leaked a `TraceStore` per call | Configuration silently did nothing; a Langfuse background thread leaked per investigation |
+
+The propensity-bias one is the one worth dwelling on. It would never have
+surfaced as a crash or a failing assertion — it would have quietly shifted
+every IPS and DR estimate in [Part 5](#part-5--would-this-survive-contact-with-production),
+in a direction that flattered whichever actions the router already preferred.
+
+One of the fixes was itself wrong on the first attempt: pruning constraints
+against `max(expires_tick)` rather than the current tick kept only the
+longest-lived one and discarded every other live constraint — strictly worse
+than the leak it replaced. It was caught by a test whose fake Redis honoured
+TTL; the first fake did not, and made a working fix look broken.
+
 ### The hot path holds no network calls
 
 `POST /route` reads an in-process posterior and a locally refreshed constraint
@@ -944,7 +969,7 @@ AGENTS.md                  conventions for AI coding agents working on this repo
 ## Testing
 
 ```bash
-python -m pytest -q        # 199 tests
+python -m pytest -q        # 210 tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs two jobs on every push:
@@ -975,6 +1000,7 @@ edit that quietly breaks the hard cases fails the build instead of shipping.
 | `test_ope.py` | Estimator unbiasedness against closed-form truth, and the failure modes. |
 | `test_service.py` | The HTTP surface, metrics format, and that every backend is optional. |
 | `test_observability.py` | The Langfuse trace tree, and that LangSmith fails open to the registry. |
+| `test_service_hardening.py` | One test per defect found reviewing the service layer. |
 | `test_traces.py` | Config parsing, secret redaction, and that tracing fails soft. |
 
 Two tests exist specifically to catch the project fooling itself:

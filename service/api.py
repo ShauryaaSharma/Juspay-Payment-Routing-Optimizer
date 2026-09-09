@@ -23,6 +23,7 @@ memory and drops its events, which is exactly what the rest of the project does.
 from __future__ import annotations
 
 import os
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -80,6 +81,13 @@ class RouterService:
         self.router = ThompsonRouter(len(self.specs), gamma=0.999, seed=0)
         self.started = time.time()
         self.decisions = 0
+        # FastAPI runs `def` (non-async) handlers in a threadpool, so requests
+        # mutate this object concurrently. The posterior update, the five
+        # history appends and the decision counter are each read-modify-write
+        # sequences; interleaved, they can leave the history arrays at
+        # different lengths and silently mis-pair ticks with outcomes. A lock
+        # costs ~100ns against a 35us decision.
+        self._lock = threading.Lock()
         # A bounded ring of routed transactions. The agent reads this; without
         # it /investigate has nothing to investigate. Capped because the hot
         # path must not grow memory without limit.
@@ -92,6 +100,10 @@ class RouterService:
         # A dedicated generator: propensities must never consume the router's
         # own randomness, or measuring changes what is measured.
         self.propensity_rng = np.random.default_rng(12345)
+        # More samples means a finer propensity, which off-policy evaluation
+        # divides by. 64 gives a resolution of ~1.5%; the floor matters more
+        # than the precision, so this is tunable rather than fixed.
+        self.propensity_samples = int(os.environ.get("ROUTER_PROPENSITY_SAMPLES", "64"))
 
         self.redis = connect(os.environ.get("REDIS_URL"))
         self.constraints: ConstraintStore = (
@@ -120,16 +132,24 @@ class RouterService:
         with metrics.decision_duration.time():
             started = time.perf_counter()
             blocked = self.constraints.blocked(context)
-            gateway = self.router.select(context.tick, context, blocked)
+            with self._lock:
+                # One batched draw serves the decision and its propensity.
+                # This was select() followed by a separate
+                # action_probabilities(), where the propensity pass measured
+                # 2.1x the decision itself and -- worse -- sat outside the
+                # timed region, so the latency reported back understated the
+                # real cost of a request by roughly 3x. Both are inside now.
+                gateway, probabilities = self.router.decide(
+                    context.tick, context, blocked,
+                    n_samples=self.propensity_samples, rng=self.propensity_rng,
+                )
             elapsed = time.perf_counter() - started
 
-        probabilities = self.router.action_probabilities(
-            context.tick, context, blocked, n_samples=64, rng=self.propensity_rng
-        )
         if blocked:
             metrics.constraint_blocks_total.inc(issuer=issuer)
         metrics.constraints_active.set(len(self.constraints.active(context.tick)))
-        self.decisions += 1
+        with self._lock:
+            self.decisions += 1
         return gateway, float(probabilities[gateway]), [self.names[i] for i in blocked], elapsed
 
     def record(self, report: OutcomeReport) -> None:
@@ -137,10 +157,12 @@ class RouterService:
             index = self.names.index(report.gateway)
         except ValueError:
             raise HTTPException(404, f"unknown gateway {report.gateway!r}")
-        self.router.update(Outcome(
-            gateway=index, success=report.success, latency_ms=report.latency_ms,
-            tick=self.tick, issuer=report.issuer,
-        ))
+        with self._lock:
+            self.router.update(Outcome(
+                gateway=index, success=report.success, latency_ms=report.latency_ms,
+                tick=self.tick, issuer=report.issuer,
+            ))
+            self._append_history(index, report)
         metrics.decisions_total.inc(
             gateway=report.gateway, outcome="success" if report.success else "failure"
         )
@@ -149,7 +171,6 @@ class RouterService:
             gateway=report.gateway, success=report.success, latency_ms=report.latency_ms,
             propensity=report.propensity, policy="thompson-0.999",
         ))
-        self._append_history(index, report)
         self.snapshot.maybe_save(self.router)
 
     def _append_history(self, gateway: int, report: "OutcomeReport") -> None:
@@ -165,17 +186,28 @@ class RouterService:
             del self._hist_success[:drop], self._hist_latency[:drop], self._hist_issuer[:drop]
 
     def history(self):
-        """Routed transactions so far, in the shape TelemetryStore expects."""
+        """Routed transactions so far, in the shape TelemetryStore expects.
+
+        Copied under the lock. A reader that snapshots these five lists while a
+        writer is midway through appending would get arrays of different
+        lengths, and RunResult would then silently mis-pair ticks with outcomes.
+        """
         from src.metrics import RunResult
 
-        n = len(self._hist_tick)
+        with self._lock:
+            ticks = list(self._hist_tick)
+            gateways = list(self._hist_gateway)
+            successes = list(self._hist_success)
+            latencies = list(self._hist_latency)
+            issuers = list(self._hist_issuer)
+        n = len(ticks)
         if n == 0:
             return None
         return RunResult(
-            router="live", chosen=np.array(self._hist_gateway),
-            success=np.array(self._hist_success), latency_ms=np.array(self._hist_latency),
+            router="live", chosen=np.array(gateways),
+            success=np.array(successes), latency_ms=np.array(latencies),
             instant_regret=np.zeros(n), cost_bps=np.zeros(n), n_gateways=len(self.specs),
-            tick=np.array(self._hist_tick), issuer=np.array(self._hist_issuer),
+            tick=np.array(ticks), issuer=np.array(issuers),
         )
 
 
@@ -277,13 +309,18 @@ def investigate(alert: str = "Conversion is down.", lookback_minutes: int = 60) 
             "have been recorded. POST /route and /outcome first.",
         )
     window = (max(0, svc.tick - lookback_minutes), svc.tick)
+    traces = TraceStore(settings().traces)
     investigator = Investigator(
         store=TelemetryStore(history, svc.specs), client=default_client(),
-        memory=MemoryStore(), config=InvestigatorConfig(),
-        traces=TraceStore(settings().traces),
+        memory=MemoryStore(), config=InvestigatorConfig(), traces=traces,
     )
-    with metrics.investigation_duration.time():
-        result = investigator.investigate(alert, window)
+    try:
+        with metrics.investigation_duration.time():
+            result = investigator.investigate(alert, window)
+    finally:
+        # Langfuse batches in a background thread and Postgres holds a
+        # connection; leaking one per investigation accumulates silently.
+        traces.close()
     metrics.investigations_total.inc(stop_reason=result.stop_reason)
     metrics.investigation_cost.inc(
         result.usage.cost_usd(settings().model.input_usd_per_mtok,
@@ -292,7 +329,13 @@ def investigate(alert: str = "Conversion is down.", lookback_minutes: int = 60) 
 
     installed = None
     if result.diagnosis is not None:
-        constraint = from_diagnosis(result.diagnosis, svc.tick, svc.names)
+        constraints_cfg = settings().constraints
+        constraint = from_diagnosis(
+            result.diagnosis, svc.tick, svc.names,
+            ttl_minutes=constraints_cfg.ttl_minutes,
+            min_confidence=constraints_cfg.min_confidence,
+            canary_rate=constraints_cfg.canary_rate,
+        )
         if constraint is not None:
             svc.constraints.add(constraint)
             installed = constraint.describe()

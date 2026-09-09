@@ -62,6 +62,33 @@ class ThompsonRouter(Router):
         winners = np.argmax(draws, axis=1)
         return np.bincount(winners, minlength=self.n_gateways) / n_samples
 
+    def decide(
+        self,
+        tick: int,
+        context: RoutingContext | None = None,
+        blocked: frozenset[int] = frozenset(),
+        n_samples: int = 64,
+        rng: np.random.Generator | None = None,
+    ) -> tuple[int, np.ndarray]:
+        """One draw serves both the decision and its propensity.
+
+        Row 0 is the decision -- a single posterior sample, which is exactly
+        Thompson sampling. Rows 1.. estimate P(argmax) for the propensity. The
+        decision row is excluded from that estimate on purpose: counting the
+        winning draw among its own evidence biases the chosen arm's propensity
+        upward by roughly 1/n, and importance weights divide by that number.
+        """
+        rng = rng if rng is not None else np.random.default_rng(0)
+        alpha = np.maximum(self.counts.successes, 1e-3)
+        beta = np.maximum(self.counts.failures, 1e-3)
+        draws = rng.beta(alpha, beta, size=(n_samples + 1, self.n_gateways))
+        if blocked:
+            draws[:, list(blocked)] = -np.inf
+        gateway = int(np.argmax(draws[0]))
+        winners = np.argmax(draws[1:], axis=1)
+        probabilities = np.bincount(winners, minlength=self.n_gateways) / n_samples
+        return gateway, probabilities
+
     def update(self, outcome: Outcome) -> None:
         self.counts.update(outcome.gateway, outcome.success)
 

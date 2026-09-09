@@ -265,6 +265,10 @@ weights undefined. Do not make a deterministic router the default logger.
 - **`MIN_SAMPLES_FOR_SR = 30`** in `src/agent/telemetry.py` makes small-sample
   rates return `None` rather than noise. Tools returning `null` is correct
   behaviour, not a bug to paper over.
+- **Heredocs are unreliable here, in two distinct ways.** Nested quotes break
+  parsing outright, and a heredoc-fed command that gets *backgrounded* loses
+  stdin — `git commit -F -` then commits nothing and still exits 0. Write the
+  content to a file and pass the path.
 - **Windows/Git Bash**: heredocs with nested quotes break frequently in this
   environment. Prefer the Write/Edit tools over `cat > file <<'EOF'` for any
   file containing apostrophes or mixed quoting.

@@ -99,6 +99,28 @@ class Router(ABC):
         """Current per-gateway SR estimate. Used for introspection only."""
         return np.full(self.n_gateways, float("nan"))
 
+    def decide(
+        self,
+        tick: int,
+        context: "RoutingContext | None" = None,
+        blocked: frozenset[int] = frozenset(),
+        n_samples: int = 64,
+        rng: "np.random.Generator | None" = None,
+    ) -> tuple[int, np.ndarray]:
+        """Choose a gateway AND report the propensity of that choice, together.
+
+        Calling `select` then `action_probabilities` costs two passes over the
+        posterior, and measured on the service hot path the propensity pass was
+        2.1x the decision itself -- the logging cost exceeded the thing being
+        logged. Subclasses that sample can serve both from one batched draw.
+
+        The default implementation is the naive two-pass version, so a router
+        that has not overridden this still works.
+        """
+        gateway = self.select(tick, context, blocked)
+        probabilities = self.action_probabilities(tick, context, blocked, n_samples, rng)
+        return gateway, probabilities
+
     def action_probabilities(
         self,
         tick: int,
