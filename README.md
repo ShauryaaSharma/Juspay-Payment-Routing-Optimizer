@@ -1111,6 +1111,7 @@ deploy/                    Prometheus scrape config and alert rules
 docs/TRACE_QUERIES.md      SQL cookbook for the trace store
 docs/DESIGN.md             router: what was tried, what failed, what is missing
 docs/INVESTIGATION_AGENT.md  the agent: eval design, loop guarantees, memory
+docs/FIELD_MANUAL.html    standalone walkthrough of all three layers, end to end
 AGENTS.md                  conventions for AI coding agents working on this repo
 ```
 
