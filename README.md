@@ -13,7 +13,7 @@ router honours on the next transaction.**
 | **+110 bps** | for the issuers a flat bandit would punish while fixing a broken one |
 | **75%** | ground-truth eval score for a no-model baseline — headroom kept on purpose |
 | **11µs** | p50 routing decision latency, ~2,400x inside a 100ms budget |
-| **210 tests** | numpy-only library · optional service layer · CI gate on every push |
+| **232 tests** | numpy-only library · optional service layer · CI gate on every push |
 
 ![Realised success rate over one simulated week](results/03_rolling_sr.svg)
 
@@ -74,6 +74,10 @@ How the three layers line up with the work Juspay describes:
 
 ```mermaid
 flowchart TB
+    subgraph CALLER["CALLER — checkout/, separate process on :8001"]
+        SHOP["Merchant checkout<br/>browser -> merchant -> router, server-to-server"]
+    end
+
     subgraph HOT["HOT PATH — per transaction, microseconds"]
         API["POST /route — service/api.py<br/>FastAPI · touches no network"]
         BANDIT["Bandit strategies — src/routers/<br/>Thompson · UCB1 · eps-greedy · static<br/>PID-Thompson · contextual (gateway x issuer)"]
@@ -112,6 +116,7 @@ flowchart TB
         CONF["Config — config.py<br/>env-driven, secrets redacted"]
     end
 
+    SHOP -->|"POST /route, POST /outcome"| API
     API --> CONSTRAINT
     CONSTRAINT --> BANDIT
     BANDIT -->|transactions| FLEET
@@ -142,6 +147,10 @@ posterior is in process and constraints come from a locally refreshed cache.
 They share a codebase here for demonstration; in production they are separate
 services with separate SLOs, because an agent that is slow is fine and a router
 that is slow is an outage.
+
+The merchant at the top is genuinely separate: its own process, its own port,
+no shared memory, reaching the router only over the same HTTP API an external
+integrator would use.
 
 ### Stack
 
@@ -197,7 +206,7 @@ library at numpy-only is worth more than the sixty lines.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                 # 210 tests, ~30s
+python -m pytest -q                 # 232 tests, ~2 min
 ```
 
 CI runs the suite on Python 3.11–3.13 and then runs the eval regression gate on
@@ -238,7 +247,142 @@ curl -s localhost:8000/health
 python bench_latency.py                     # decision latency vs the 100ms budget
 ```
 
+**The two front ends** — no Docker, no API key, no backends
+
+```bash
+uvicorn service.api:app --port 8000     # router + walkthrough UI  -> localhost:8000
+uvicorn checkout.app:app --port 8001    # merchant checkout        -> localhost:8001
+```
+
+`docker compose up -d` starts both, plus every backend.
+
 Charts are written to `results/` as dependency-free SVG.
+
+### The walkthrough UI
+
+**The loop, in about thirty seconds.**
+
+`service/static/index.html` is a single file: no build step, no framework, no
+dependency, served by the same FastAPI app as everything else. If you delete it
+the service is unaffected — `/` says so and points at `/docs`.
+
+It is not a dashboard bolted onto a simulation. Every button drives the real
+system through `/simulate/*`, which plays the caller the service normally has:
+it routes through the actual bandit, resolves the outcome against the actual
+simulated fleet, and feeds it back through the actual update path. The only
+thing standing in for production is the gateway itself. The numbers on screen
+are the router's numbers.
+
+The sequence it is built around:
+
+| Step | What you do | What you see |
+| --- | --- | --- |
+| 1 | Send 600 transactions | The bandit explores, then concentrates. Traffic share and posterior success rate per gateway. |
+| 2 | Break the busiest gateway, for HDFC only | The gateway's *aggregate* rate merely sags. Nothing looks broken. |
+| 3 | Send 600 more | Fleet conversion falls a few points. **HDFC falls off a cliff.** |
+| 4 | Investigate | The agent segments, names `PG-Bravo / HDFC`, installs a constraint scoped to that pair. |
+| 5 | Send 600 more | HDFC recovers. Everyone else keeps the gateway. |
+
+A recorded run, no API key, backends off:
+
+```
+after the fault      fleet 83.2%   HDFC 67.2%   ICICI 90.3%   SBI 90.4%   AXIS 87.8%
+diagnosis            ISSUER_SPECIFIC on PG-Bravo / HDFC   confidence 0.70   3 tool calls
+                       HDFC on PG-Bravo:            10.71%
+                       other issuers on PG-Bravo:   97.67%
+constraint           avoid PG-Bravo for HDFC, ticks 180-660, 2% canary
+after the constraint fleet 92.2%   HDFC 89.7%   180 blocked decisions   5 canary releases
+```
+
+Two details the UI deliberately exposes rather than hides.
+
+**The window is an operator control, not a constant.** The investigation reads a
+time range, and the range decides the answer. Too wide and healthy traffic from
+before the fault dilutes the segment below the 30-transaction minimum that makes
+a success rate meaningful; too narrow and it opens *after* the bandit has already
+fled the gateway, so there is nothing left to segment. Across 12 trials per
+setting, a window matching the traffic sent since the fault produced the scoped
+diagnosis 9 times out of 12, while the same run with the window at 90 or 120
+minutes produced it 0 times out of 12 — it fell back to blaming the whole
+gateway. Breaking a gateway sets the field to "everything since", which is what
+an alert timestamp gives a real responder; it stays editable, and when the
+diagnosis comes back gateway-wide the UI says why and tells you to widen it.
+
+**A gateway-wide diagnosis is a real answer, not a failure.** It means no single
+issuer cleared the sample minimum, so there was not enough evidence to blame one.
+The honest response is a wider constraint, and that is what gets installed.
+
+### The merchant checkout
+
+**A second service, on port 8001, that consumes the first.**
+
+The walkthrough UI above has one honest weakness: `/simulate/traffic` plays both
+the merchant *and* the gateway. Nothing in the repo exercised the public contract
+the way an integrator would, so nothing proved the router is a service rather
+than a simulation with a web page attached.
+
+`checkout/` is that proof. It is a separate process on a separate port sharing no
+memory with the router, and it speaks the same three calls a real merchant
+backend speaks:
+
+| | call | what it is |
+| --- | --- | --- |
+| 1 | `POST /route` | "where should this payment go?" — production contract |
+| 2 | `POST /simulate/attempt` | the acquiring network, simulated — **the only fiction** |
+| 3 | `POST /outcome` | "here is what happened" — production contract |
+
+Pick a bank, press Pay, and the page shows what the merchant got back: the
+gateway chosen, the propensity that makes the decision replayable for off-policy
+evaluation, which gateways the constraint layer withheld *before* the bandit
+chose, and the decision latency in microseconds. Break a gateway for HDFC in the
+router's UI on 8000, run the investigation, then pay as HDFC on 8001 — the
+constraint the agent installed shows up in the merchant's trace:
+
+```
+HDFC   -> PG-Alpha    declined  blocked=['PG-Bravo']
+HDFC   -> PG-Alpha    approved  blocked=['PG-Bravo']
+ICICI  -> PG-Alpha    declined  blocked=['PG-Bravo']
+```
+
+Four decisions in it are deliberate.
+
+**The browser never talks to the router.** A routing API decides where money
+goes; that is a backend concern. The page posts to the merchant, and the merchant
+calls the router server-to-server — which is how a real integration works, and
+why there is no CORS configuration anywhere in this repo.
+
+**No HTTP client dependency.** urllib is enough for three JSON POSTs.
+`service/events.py` posts to ClickHouse the same way.
+
+**A router outage is a 502, not a 500,** with the command to fix it in the
+message, and `/health` reports the merchant and its dependency separately so the
+page explains the outage instead of showing a dead button. That path is tested
+against a real closed port rather than a mock, because "the dependency is
+unreachable" is the one failure a merchant integration has to handle well.
+
+**No card fields.** Routing decisions are made per issuing bank, so net banking
+is the method wired up; UPI, cards and wallets are shown inert. A test asserts
+the page renders nothing that could collect a card number. Kirana Cart is a
+fictional storefront.
+
+One measurement worth keeping. The first version reported a 6.1-second round trip
+for three localhost calls, which made the router look slow when it was answering
+in microseconds. The cause was `localhost` resolving to `::1` first on Windows,
+with urllib waiting for that connection to fail before retrying IPv4. Pinning
+`127.0.0.1` took it to 32 ms. The router's own `decision_micros` was never the
+problem, and would have been blamed.
+
+### An invariant the demo layer carries
+
+The demo endpoints carry one invariant worth naming, because getting it wrong
+fails silently. The service's tick is wall-clock minutes; the demo replays hours
+of traffic in milliseconds. Without an explicit simulated clock every transaction
+lands on tick 0, every windowed telemetry query comes back empty, and the agent
+answers "no gateway carried enough traffic to assess" no matter what is actually
+broken — which reads as a broken agent rather than a broken clock.
+`RouterService.clock_offset` is zero in production and advanced by the demo at
+10 transactions per simulated minute, matching the offline simulator's implicit
+rate. `tests/test_demo.py` pins it.
 
 ### Configuration and traces
 
@@ -930,6 +1074,10 @@ service/api.py             FastAPI: /route (hot path), /investigate (cold path)
 service/state.py           Redis-backed constraints + posterior snapshots
 service/events.py          Kafka and ClickHouse sinks, both fail-soft
 service/metrics.py         Prometheus exposition format, written directly
+service/demo.py            /simulate/*: drives real traffic through the live router
+service/static/index.html  Walkthrough UI, one file, no build step
+checkout/app.py            Merchant service on :8001, consumes the routing API
+checkout/static/index.html Checkout page, one file, no build step
 src/agent/langfuse_sink.py Langfuse backend: one trace tree per investigation
 src/agent/prompt_source.py LangSmith prompts, falling back to the git registry
 dsl/                       Haskell constraint DSL: parser, validator, CLI
@@ -969,7 +1117,7 @@ AGENTS.md                  conventions for AI coding agents working on this repo
 ## Testing
 
 ```bash
-python -m pytest -q        # 210 tests
+python -m pytest -q        # 232 tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs two jobs on every push:
@@ -1001,6 +1149,8 @@ edit that quietly breaks the hard cases fails the build instead of shipping.
 | `test_service.py` | The HTTP surface, metrics format, and that every backend is optional. |
 | `test_observability.py` | The Langfuse trace tree, and that LangSmith fails open to the registry. |
 | `test_service_hardening.py` | One test per defect found reviewing the service layer. |
+| `test_demo.py` | The walkthrough endpoints, and that the UI only calls routes that exist. |
+| `test_checkout.py` | The merchant against the real router, plus the router-is-down path. |
 | `test_traces.py` | Config parsing, secret redaction, and that tracing fails soft. |
 
 Two tests exist specifically to catch the project fooling itself:
