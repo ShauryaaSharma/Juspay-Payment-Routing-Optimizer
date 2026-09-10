@@ -18,6 +18,9 @@ WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY --chown=router:router src/ ./src/
 COPY --chown=router:router service/ ./service/
+# The merchant checkout ships in the same image and runs from the same code.
+# It is a separate *process*, not a separate build: one image, two entrypoints.
+COPY --chown=router:router checkout/ ./checkout/
 COPY --chown=router:router bench_latency.py pytest.ini ./
 
 USER router

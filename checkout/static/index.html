@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kirana Cart — Checkout</title>
+<style>
+  :root {
+    --page: #eef1f6; --card: #ffffff; --ink: #0f1729; --muted: #5b6779; --dim: #8b95a6;
+    --line: #dfe4ec; --line-soft: #eaeef4;
+    --brand: #2b5bd7; --brand-soft: #eaf0ff;
+    --ok: #067647; --ok-soft: #e7f6ee; --bad: #b42318; --bad-soft: #fdeceb;
+    --warn: #a15c07; --warn-soft: #fdf3e5;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand); }
+
+  .topbar {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 12px 20px; display: flex; align-items: center; gap: 12px;
+  }
+  .logo {
+    width: 30px; height: 30px; border-radius: 8px; background: var(--brand);
+    color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 15px;
+  }
+  .topbar b { font-size: 15px; }
+  .topbar .oid { color: var(--dim); font: 12px var(--mono); }
+  .lock {
+    margin-left: auto; font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .wrap {
+    max-width: 1120px; margin: 0 auto; padding: 22px 20px 60px;
+    display: grid; grid-template-columns: 340px 1fr; gap: 20px; align-items: start;
+  }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow);
+  }
+  .card > h2 {
+    font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 0; padding: 15px 18px 0; font-weight: 600;
+  }
+  .card > .body { padding: 15px 18px 18px; }
+
+  .line { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; }
+  .line span:first-child { color: var(--muted); }
+  .line .amt { font-variant-numeric: tabular-nums; }
+  .total {
+    border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 12px;
+    font-weight: 650; font-size: 17px;
+  }
+
+  .methods { display: grid; gap: 8px; }
+  .method {
+    display: flex; align-items: center; gap: 11px; padding: 13px 14px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    cursor: not-allowed;
+  }
+  .method.live { cursor: default; border-color: var(--brand); background: var(--brand-soft); }
+  .method .ico {
+    width: 32px; height: 32px; border-radius: 8px; background: #f1f4f9;
+    display: grid; place-items: center; font-size: 15px; flex: none;
+  }
+  .method.live .ico { background: #fff; }
+  .method .t { font-weight: 600; font-size: 14px; }
+  .method .s { font-size: 12px; color: var(--muted); }
+  .method .badge {
+    margin-left: auto; font-size: 11px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; white-space: nowrap;
+  }
+  .method.live .badge { color: var(--brand); border-color: #bcd0fb; background: #fff; }
+
+  .banks { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 9px; }
+  .bank {
+    display: flex; align-items: center; gap: 10px; padding: 12px 13px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    font-size: 14px; text-align: left; font-family: inherit; color: inherit;
+  }
+  .bank:hover { border-color: #c3cddd; }
+  .bank[aria-pressed="true"] { border-color: var(--brand); background: var(--brand-soft); }
+  .bank .initials {
+    width: 30px; height: 30px; border-radius: 7px; flex: none; display: grid;
+    place-items: center; font: 700 11px var(--mono); background: #f1f4f9; color: var(--muted);
+  }
+  .bank[aria-pressed="true"] .initials { background: #fff; color: var(--brand); }
+
+  .pay {
+    width: 100%; margin-top: 16px; padding: 14px; border: 0; border-radius: 10px;
+    background: var(--brand); color: #fff; font: 650 15px/1 inherit; cursor: pointer;
+  }
+  .pay:disabled { background: #aab6cc; cursor: not-allowed; }
+  .pay:hover:not(:disabled) { background: #2450c4; }
+
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  .note code { font: 12px var(--mono); background: #f1f4f9; padding: 1px 5px; border-radius: 4px; }
+
+  .result { border-radius: 10px; padding: 14px 15px; margin-bottom: 14px; }
+  .result.ok  { background: var(--ok-soft);  border: 1px solid #b7e3ca; }
+  .result.bad { background: var(--bad-soft); border: 1px solid #f3c0bb; }
+  .result .h { font-weight: 650; font-size: 15px; }
+  .result.ok .h  { color: var(--ok); }
+  .result.bad .h { color: var(--bad); }
+  .result .sub { font-size: 13px; color: var(--muted); margin-top: 3px; }
+
+  .trace { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 10px; }
+  .cell { border: 1px solid var(--line-soft); border-radius: 9px; padding: 10px 12px; background: #fbfcfe; }
+  .cell .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+  .cell .v { font: 600 15px/1.35 var(--mono); margin-top: 3px; word-break: break-word; }
+  .cell .v small { font: 400 11.5px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--muted); display: block; }
+
+  .steps { display: grid; gap: 0; margin-top: 14px; }
+  .stepline {
+    display: grid; grid-template-columns: 26px 1fr; gap: 11px; padding: 9px 0;
+    border-top: 1px solid var(--line-soft); font-size: 13.5px;
+  }
+  .stepline:first-child { border-top: 0; }
+  .stepline .n {
+    width: 22px; height: 22px; border-radius: 50%; background: #f1f4f9; color: var(--muted);
+    display: grid; place-items: center; font: 600 11px var(--mono);
+  }
+  .stepline .n.sim { background: var(--warn-soft); color: var(--warn); }
+  .stepline code { font: 12.5px var(--mono); color: var(--brand); }
+  .stepline .d { color: var(--muted); font-size: 12.5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--dim); font-weight: 600; padding: 0 8px 7px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 8px; border-bottom: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+  td.g { font: 12.5px var(--mono); }
+  .chip { font: 11px var(--mono); padding: 3px 7px; border-radius: 5px; }
+  .chip.ok  { background: var(--ok-soft);  color: var(--ok); }
+  .chip.bad { background: var(--bad-soft); color: var(--bad); }
+  .chip.blk { background: var(--bad-soft); color: var(--bad); margin-right: 4px; }
+  .chip.non { color: var(--dim); }
+
+  .toolbar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+  button.ghost {
+    font: 500 13px/1 inherit; padding: 9px 12px; border-radius: 8px; cursor: pointer;
+    background: var(--card); color: var(--ink); border: 1px solid var(--line);
+  }
+  button.ghost:hover:not(:disabled) { border-color: #c3cddd; }
+  button.ghost:disabled { opacity: .5; cursor: progress; }
+
+  .banner {
+    background: var(--bad-soft); border: 1px solid #f3c0bb; color: var(--bad);
+    border-radius: 10px; padding: 12px 14px; font-size: 13.5px; margin-bottom: 16px;
+  }
+  .banner code { font: 12px var(--mono); }
+  .muted { color: var(--muted); font-size: 13px; }
+  footer { text-align: center; color: var(--dim); font-size: 12px; padding: 26px 20px 0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">K</div>
+  <b>Kirana Cart</b>
+  <span class="oid" id="oid"></span>
+  <span class="lock">🔒 Demo checkout — no real payment is taken</span>
+</div>
+
+<div class="wrap">
+
+  <!-- ORDER SUMMARY -->
+  <div>
+    <div class="card">
+      <h2>Order summary</h2>
+      <div class="body" id="summary"></div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>What this page is</h2>
+      <div class="body muted">
+        A merchant, running as its own service on its own port, integrating against
+        the routing API. Your browser never talks to the router — this page posts to
+        the merchant, and the merchant calls the router server-to-server, which is
+        how a real integration works.
+        <div class="note" style="margin-top:10px">
+          Routing decisions are made per <b>issuing bank</b>, so net banking is the
+          method wired up here. No card details are collected anywhere.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAYMENT -->
+  <div>
+    <div id="banner"></div>
+
+    <div class="card">
+      <h2>Payment method</h2>
+      <div class="body">
+        <div class="methods">
+          <div class="method"><div class="ico">▣</div>
+            <div><div class="t">UPI</div><div class="s">Pay by any UPI app</div></div>
+            <span class="badge">not in this demo</span></div>
+          <div class="method"><div class="ico">▤</div>
+            <div><div class="t">Credit / debit card</div><div class="s">No card details are collected here</div></div>
+            <span class="badge">not in this demo</span></div>
+          <div class="method live"><div class="ico">▥</div>
+            <div><div class="t">Net banking</div><div class="s">Choose your bank below</div></div>
+            <span class="badge">routed live</span></div>
+          <div class="method"><div class="ico">▦</div>
+            <div><div class="t">Wallets</div><div class="s">Paytm, PhonePe, Amazon Pay</div></div>
+            <span class="badge">not in this demo</span></div>
+        </div>
+
+        <div style="margin:18px 0 10px; font-weight:600; font-size:14px">Select your bank</div>
+        <div class="banks" id="banks"></div>
+
+        <button class="pay" id="pay" disabled>Select a bank to continue</button>
+        <div class="note" id="payNote">
+          The merchant will call <code>POST /route</code>, attempt the payment on
+          whichever gateway comes back, and report the result with
+          <code>POST /outcome</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>Last payment</h2>
+      <div class="body" id="last">
+        <div class="muted">Nothing yet. Pay once and the full routing trace appears here.</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>Payments this session</h2>
+      <div class="body">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Bank</th><th>Gateway</th><th>Result</th>
+            <th style="text-align:right">Propensity</th><th style="text-align:right">Decision</th>
+          </tr></thead>
+          <tbody id="ledger"><tr><td colspan="6" class="muted">No payments yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>Router state</h2>
+      <div class="body">
+        <div class="toolbar">
+          <button class="ghost" id="warm">Send 600 background transactions</button>
+          <button class="ghost" id="refresh">Refresh</button>
+          <span class="muted" id="warmNote">
+            One shopper cannot teach a bandit anything — a posterior needs hundreds of
+            transactions to move.
+          </span>
+        </div>
+        <div style="margin-top:14px" id="routerState" class="muted">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Kirana Cart is a fictional merchant. Gateways are simulated; the routing decision,
+  the constraint layer and the propensity are real.
+  <a href="/docs">Merchant API</a>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const inr = (paise) => "₹" + (paise / 100).toLocaleString("en-IN", {minimumFractionDigits: 2});
+let cart = null, bank = null, ledger = [];
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function renderSummary() {
+  $("oid").textContent = cart.order_id;
+  $("summary").innerHTML =
+    cart.items.map(i => `<div class="line"><span>${i.label}</span>
+      <span class="amt">${inr(i.amount_paise)}</span></div>`).join("") +
+    `<div class="line total"><span style="color:var(--ink)">Total payable</span>
+       <span class="amt">${inr(cart.total_paise)}</span></div>`;
+}
+
+function renderBanks() {
+  $("banks").innerHTML = cart.banks.map(b => `
+    <button class="bank" data-code="${b.code}" aria-pressed="false">
+      <span class="initials">${b.code.slice(0, 4)}</span><span>${b.name}</span>
+    </button>`).join("");
+  $("banks").querySelectorAll(".bank").forEach(el => {
+    el.onclick = () => {
+      bank = el.dataset.code;
+      $("banks").querySelectorAll(".bank").forEach(o =>
+        o.setAttribute("aria-pressed", String(o === el)));
+      $("pay").disabled = false;
+      $("pay").textContent = `Pay ${inr(cart.total_paise)}`;
+    };
+  });
+}
+
+function renderLast(r) {
+  const blocked = r.blocked.length
+    ? r.blocked.map(g => `<span class="chip blk">${g}</span>`).join("")
+    : `<span class="chip non">none</span>`;
+  $("last").innerHTML = `
+    <div class="result ${r.success ? "ok" : "bad"}">
+      <div class="h">${r.success
+        ? "Payment successful" : "Payment failed — " + r.failure_reason}</div>
+      <div class="sub">${inr(r.amount_paise)} · ${r.issuer} · routed to
+        <b>${r.gateway}</b> · gateway took ${r.gateway_latency_ms} ms</div>
+    </div>
+    <div class="trace">
+      <div class="cell"><div class="k">Gateway chosen</div><div class="v">${r.gateway}</div></div>
+      <div class="cell"><div class="k">Propensity</div><div class="v">${r.propensity.toFixed(3)}
+        <small>P(this gateway) under the live policy — what makes the decision replayable</small></div></div>
+      <div class="cell"><div class="k">Removed first</div><div class="v">${blocked}
+        <small>gateways the constraint layer withheld before the bandit chose</small></div></div>
+      <div class="cell"><div class="k">Decision</div><div class="v">${r.decision_micros.toFixed(0)} µs
+        <small>router-side, against a 100 ms budget</small></div></div>
+      <div class="cell"><div class="k">Merchant round trip</div><div class="v">${r.merchant_round_trip_ms} ms
+        <small>three HTTP calls across two processes</small></div></div>
+      <div class="cell"><div class="k">Transaction</div><div class="v" style="font-size:12px">${
+        r.transaction_id.slice(0, 16)}…</div></div>
+    </div>
+    <div class="steps">
+      <div class="stepline"><span class="n">1</span><span>
+        <code>POST /route</code> → ${r.gateway}
+        <span class="d">the merchant asks where to send it</span></span></div>
+      <div class="stepline"><span class="n sim">2</span><span>
+        <code>POST /simulate/attempt</code> → ${r.success ? "approved" : "declined"}
+        <span class="d">stands in for the acquiring network — the only simulated step</span></span></div>
+      <div class="stepline"><span class="n">3</span><span>
+        <code>POST /outcome</code> → posterior updated
+        <span class="d">the router learns from this payment; the next one is routed with it</span></span></div>
+    </div>`;
+}
+
+function renderLedger() {
+  if (!ledger.length) return;
+  $("ledger").innerHTML = ledger.map((r, i) => `<tr>
+    <td>${ledger.length - i}</td>
+    <td>${r.issuer}</td>
+    <td class="g">${r.gateway}</td>
+    <td><span class="chip ${r.success ? "ok" : "bad"}">${r.success ? "approved" : "declined"}</span></td>
+    <td class="g" style="text-align:right">${r.propensity.toFixed(3)}</td>
+    <td class="g" style="text-align:right">${r.decision_micros.toFixed(0)} µs</td>
+  </tr>`).join("");
+}
+
+function renderRouterState(s) {
+  const rows = s.gateways.map(g => {
+    const tags = g.blocked_for.map(i => `<span class="chip blk">blocked: ${i}</span>`).join("")
+      || `<span class="chip non">—</span>`;
+    return `<tr><td class="g">${g.name}</td>
+      <td style="text-align:right">${(g.posterior_sr * 100).toFixed(1)}%</td>
+      <td>${tags}</td></tr>`;
+  }).join("");
+  $("routerState").innerHTML = `
+    <table><thead><tr><th>Gateway</th>
+      <th style="text-align:right">Posterior SR</th><th>Constraints</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <div class="note">${s.decisions.toLocaleString()} decisions ·
+      ${s.constraints.length} active constraint(s) ·
+      clock T+${s.tick}m. Constraints are installed by the investigation agent in
+      the router's own UI on port 8000; this page only shows their effect.</div>`;
+}
+
+async function refreshRouter() {
+  try {
+    renderRouterState(await api("/router/state"));
+    $("banner").innerHTML = "";
+  } catch (e) {
+    $("routerState").innerHTML = `<span class="muted">unavailable</span>`;
+    $("banner").innerHTML = `<div class="banner"><b>The routing service is not reachable.</b><br>
+      ${e.message}</div>`;
+  }
+}
+
+$("pay").onclick = async () => {
+  $("pay").disabled = true; $("pay").textContent = "Contacting the router…";
+  try {
+    const r = await api("/pay", {issuer: bank, amount_paise: cart.total_paise});
+    renderLast(r);
+    ledger.unshift(r); ledger = ledger.slice(0, 10); renderLedger();
+    await refreshRouter();
+    $("last").scrollIntoView({behavior: "smooth", block: "nearest"});
+  } catch (e) {
+    $("last").innerHTML = `<div class="result bad"><div class="h">Could not complete the payment</div>
+      <div class="sub">${e.message}</div></div>`;
+  }
+  $("pay").disabled = false; $("pay").textContent = `Pay ${inr(cart.total_paise)}`;
+};
+
+$("warm").onclick = async () => {
+  $("warm").disabled = true; $("refresh").disabled = true;
+  const label = $("warm").textContent;
+  $("warm").textContent = "Sending…";
+  try {
+    const b = await api("/background", {count: 600});
+    $("warmNote").innerHTML = `Routed <b>${b.routed}</b> background transactions over
+      ${b.minutes_simulated} simulated minutes — success rate
+      <b>${(b.success_rate * 100).toFixed(1)}%</b>.`;
+    await refreshRouter();
+  } catch (e) {
+    $("warmNote").textContent = e.message;
+  }
+  $("warm").textContent = label;
+  $("warm").disabled = false; $("refresh").disabled = false;
+};
+
+$("refresh").onclick = refreshRouter;
+
+(async () => {
+  cart = await api("/cart");
+  renderSummary(); renderBanks();
+  await refreshRouter();
+})();
+</script>
+</body>
+</html>

@@ -34,6 +34,31 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # A merchant integrating against the router: same image, different entrypoint,
+  # its own process and port. It reaches the router by service name over the
+  # compose network, which is the point -- the only way to show the router is a
+  # service is to have something else actually consume it.
+  #
+  #   http://localhost:8001   the checkout
+  #   http://localhost:8000   the router's own UI, where faults are injected
+  checkout:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      ROUTER_URL: http://router:8000
+    command: ["uvicorn", "checkout.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      router:
+        condition: service_started
+    restart: unless-stopped
+
   # Routing constraints (TTL keys, shared across replicas) and periodic
   # posterior snapshots. Not on the hot read path -- see service/state.py.
   redis:
