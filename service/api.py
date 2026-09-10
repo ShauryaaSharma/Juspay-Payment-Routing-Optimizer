@@ -81,6 +81,13 @@ class RouterService:
         self.router = ThompsonRouter(len(self.specs), gamma=0.999, seed=0)
         self.started = time.time()
         self.decisions = 0
+        # Simulated minutes added on top of the wall clock. Production leaves
+        # this at zero. The demo endpoints advance it, because they replay
+        # hours of traffic in milliseconds and everything downstream -- the
+        # investigation window, constraint TTLs, baseline-vs-current
+        # comparisons -- is expressed in minutes and would otherwise collapse
+        # onto a single tick.
+        self.clock_offset = 0
         # FastAPI runs `def` (non-async) handlers in a threadpool, so requests
         # mutate this object concurrently. The posterior update, the five
         # history appends and the decision counter are each read-modify-write
@@ -125,7 +132,7 @@ class RouterService:
     @property
     def tick(self) -> int:
         """Minutes since start, the clock constraints are expressed in."""
-        return int((time.time() - self.started) / 60)
+        return int((time.time() - self.started) / 60) + self.clock_offset
 
     def route(self, issuer: str) -> tuple[int, float, list[str], float]:
         context = RoutingContext(tick=self.tick, issuer=issuer)
@@ -214,6 +221,12 @@ class RouterService:
 SERVICE: RouterService | None = None
 
 
+def set_service(service: "RouterService") -> None:
+    """Replace the live service. Used by /simulate/reset to start a demo over."""
+    global SERVICE
+    SERVICE = service
+
+
 @asynccontextmanager
 async def lifespan(app):
     global SERVICE
@@ -229,6 +242,33 @@ app = FastAPI(
     description="Adaptive gateway routing with an LLM diagnostic agent.",
     lifespan=lifespan,
 )
+
+# Demo endpoints live under /simulate so it is obvious which routes exist for
+# the walkthrough and which are the service itself.
+from .demo import router as demo_router  # noqa: E402  (needs `app` defined first)
+
+app.include_router(demo_router)
+
+_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """Serve the walkthrough UI, or say plainly that it is missing.
+
+    The UI is a single static file with no build step. If it is absent the
+    service is unaffected -- everything it does is available over the API.
+    """
+    from fastapi.responses import FileResponse, JSONResponse
+
+    page = os.path.join(_UI_DIR, "index.html")
+    if not os.path.exists(page):
+        return JSONResponse({
+            "service": "payment-routing-optimizer",
+            "ui": "not installed (service/static/index.html is missing)",
+            "docs": "/docs",
+        })
+    return FileResponse(page)
 
 
 def _service() -> RouterService:

@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Routing Optimizer</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1d222a; --line: #2a313b;
+    --ink: #e6eaf0; --muted: #8b97a8; --dim: #5d6875;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --accent: #58a6ff;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .backends { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill {
+    font: 11px/1 var(--mono); padding: 5px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim); background: var(--panel);
+  }
+  .pill.on { color: var(--ok); border-color: #1c3b25; background: #101a13; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-top: 14px;
+  }
+  .panel h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600;
+  }
+
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 10px; }
+  .step {
+    border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px;
+    background: var(--panel-2);
+  }
+  .step b { display: block; font-size: 12px; color: var(--accent); margin-bottom: 3px; }
+  .step span { font-size: 12.5px; color: var(--muted); }
+
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button {
+    font: 500 13px/1 inherit; padding: 9px 13px; border-radius: 7px; cursor: pointer;
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  }
+  button:hover:not(:disabled) { border-color: #3d4753; background: #232932; }
+  button:disabled { opacity: .45; cursor: progress; }
+  button.primary { background: #12304f; border-color: #1f4d7a; color: #cfe6ff; }
+  button.danger  { background: #3a1618; border-color: #63252a; color: #ffd3d3; }
+  select, input[type=number] {
+    font: 13px/1 inherit; padding: 8px 9px; border-radius: 7px;
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  }
+  .spacer { flex: 1; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .stat .v { font: 600 21px/1.25 var(--mono); margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; padding: 0 10px 8px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 9px 10px; border-bottom: 1px solid #21262e; vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  .gw { font: 600 13px var(--mono); }
+  .bar { height: 6px; border-radius: 3px; background: #232932; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .num { font: 13px var(--mono); text-align: right; }
+  .tag {
+    display: inline-block; font: 10.5px/1 var(--mono); padding: 4px 7px;
+    border-radius: 5px; margin-right: 4px;
+  }
+  .tag.block { background: #3a1618; color: #ffbcbc; border: 1px solid #63252a; }
+  .tag.fault { background: #3d2f0d; color: #ffd88a; border: 1px solid #6b5313; }
+  .tag.none  { color: var(--dim); }
+
+  pre {
+    font: 12px/1.6 var(--mono); background: #0b0e12; border: 1px solid var(--line);
+    border-radius: 8px; padding: 13px; overflow-x: auto; margin: 0; white-space: pre-wrap;
+  }
+  .verdict { font: 600 15px var(--mono); margin-bottom: 6px; }
+  .verdict.ok { color: var(--ok); } .verdict.bad { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .flash { animation: flash .6s ease; }
+  @keyframes flash { from { background: #12304f; } to { background: transparent; } }
+  .foot { color: var(--dim); font-size: 12px; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Payment Routing Optimizer</h1>
+    <span class="sub">adaptive routing &middot; diagnostic agent &middot; the loop between them</span>
+    <div class="backends" id="backends"></div>
+  </header>
+
+  <div class="panel">
+    <h2>What to do</h2>
+    <div class="steps">
+      <div class="step"><b>1 &nbsp;Send traffic</b><span>The bandit explores, then concentrates on whatever converts best.</span></div>
+      <div class="step"><b>2 &nbsp;Break a gateway</b><span>For one issuer only. The dropdown follows whichever gateway is busiest — breaking an idle one shows nothing.</span></div>
+      <div class="step"><b>3 &nbsp;Send more traffic</b><span>Watch conversion fall for that issuer while the fleet looks fine.</span></div>
+      <div class="step"><b>4 &nbsp;Investigate</b><span>The agent segments the window you give it, names the broken path, and installs a constraint scoped to it.</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Controls</h2>
+    <div class="controls">
+      <button class="primary" id="send">Send traffic</button>
+      <input type="number" id="count" value="600" min="50" max="20000" step="50" style="width:96px">
+      <span class="spacer"></span>
+      <select id="gw"></select>
+      <select id="iss"></select>
+      <button class="danger" id="break">Break it</button>
+      <button id="heal">Heal all</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="hint" id="lastAction">Ready. Start with <b>Send traffic</b> so the router has something to learn from.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Live</h2>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Flow</h2>
+    <svg id="flow" viewBox="0 0 1100 300" width="100%" role="img"
+         aria-label="Traffic flows from issuers through the constraint layer to gateways"></svg>
+  </div>
+
+  <div class="panel">
+    <h2>Gateways</h2>
+    <table>
+      <thead><tr>
+        <th>Gateway</th><th>Traffic share</th><th class="num">Share</th>
+        <th class="num">Posterior SR</th><th>Status</th>
+      </tr></thead>
+      <tbody id="gwbody"></tbody>
+    </table>
+    <div class="hint">
+      <b>Posterior SR</b> is what the router believes, learned only from transactions it
+      chose to send. It cannot see a gateway it stopped using — which is the whole
+      difficulty, and why the agent reads telemetry rather than the router's own beliefs.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Per issuer</h2>
+    <table>
+      <thead><tr><th>Issuer</th><th>Last batch</th><th class="num">Routed</th><th class="num">Success rate</th></tr></thead>
+      <tbody id="issbody"><tr><td colspan="4" style="color:var(--dim)">Send traffic to populate.</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Investigation</h2>
+    <div class="controls" style="margin-bottom:12px">
+      <button class="primary" id="investigate">Run investigation</button>
+      <label class="hint" style="margin:0">window &nbsp;last
+        <input type="number" id="lookback" value="60" min="5" max="1440" step="5"
+               style="width:78px"> min</label>
+      <span class="hint" style="margin:0; flex-basis:100%">
+        Reads the telemetry those routing decisions produced. No API key needed — it falls
+        back to a deterministic baseline policy. The window is yours to choose and it
+        matters: too wide and healthy traffic from before the fault dilutes the segment,
+        too narrow and it opens after the bandit has already fled the gateway. Breaking a
+        gateway sets it to the traffic sent since.
+      </span>
+    </div>
+    <div id="diag"><pre>Not run yet.</pre></div>
+  </div>
+
+  <div class="panel">
+    <h2>Active constraints</h2>
+    <div id="cons"><pre>None. An investigation installs one when it finds a path worth avoiding.</pre></div>
+  </div>
+
+  <div class="foot">
+    Gateways are simulated; everything else is the real system — the real bandit, the
+    real constraint layer, the real agent loop.
+    <a href="/docs">API docs</a> &middot; <a href="/metrics">Prometheus metrics</a>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pct = (v) => v === null || v === undefined ? "—" : (v * 100).toFixed(1) + "%";
+let lastBatch = null;
+let gwTouched = false;
+let incidentTick = null;
+let lookbackTouched = false;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+function syncLookback(state) {
+  // Default the window to "everything since I noticed", which is what an alert
+  // timestamp gives a real responder. Left alone once the operator edits it.
+  if (incidentTick === null || lookbackTouched) return;
+  $("lookback").value = Math.max(5, Math.round((state.tick - incidentTick) / 5) * 5);
+}
+
+function busy(on, note) {
+  document.querySelectorAll("button").forEach(b => b.disabled = on);
+  if (note) $("lastAction").innerHTML = note;
+}
+
+function renderBackends(state) {
+  const flags = {redis: "Redis", kafka: "Kafka", clickhouse: "ClickHouse"};
+  $("backends").innerHTML = Object.entries(flags).map(([k, label]) =>
+    `<span class="pill ${state.backends[k] ? "on" : ""}">${label} ${state.backends[k] ? "on" : "off"}</span>`
+  ).join("");
+}
+
+function renderStats(state) {
+  const cells = [
+    ["Decisions", state.decisions.toLocaleString()],
+    ["Recent success rate", pct(state.recent_success_rate)],
+    ["Active constraints", state.constraints.length],
+    ["Blocked decisions", state.constraint_stats.blocked_decisions ?? 0],
+    ["Canary releases", state.constraint_stats.canary_releases ?? 0],
+    ["Simulated clock", "T+" + state.tick + "m"],
+  ];
+  $("stats").innerHTML = cells.map(([k, v]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+}
+
+function shareFor(name) {
+  if (!lastBatch) return null;
+  const row = lastBatch.per_gateway.find(g => g.gateway === name);
+  return row ? row.share : null;
+}
+
+function renderGateways(state) {
+  $("gwbody").innerHTML = state.gateways.map(g => {
+    const share = shareFor(g.name);
+    const tags = [];
+    g.blocked_for.forEach(i => tags.push(`<span class="tag block">blocked: ${i}</span>`));
+    if (g.injected_fault) {
+      const f = g.injected_fault;
+      tags.push(`<span class="tag fault">broken: ${f.issuer}</span>`);
+    }
+    if (!tags.length) tags.push(`<span class="tag none">healthy</span>`);
+    return `<tr>
+      <td class="gw">${g.name}</td>
+      <td><div class="bar"><i style="width:${share === null ? 0 : (share * 100).toFixed(1)}%"></i></div></td>
+      <td class="num">${share === null ? "—" : pct(share)}</td>
+      <td class="num">${pct(g.posterior_sr)}</td>
+      <td>${tags.join("")}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderIssuers() {
+  if (!lastBatch) return;
+  $("issbody").innerHTML = lastBatch.per_issuer.map(i => {
+    const sr = i.success_rate;
+    const colour = sr === null ? "var(--dim)" : sr < 0.75 ? "var(--bad)" : sr < 0.9 ? "var(--warn)" : "var(--ok)";
+    const width = sr === null ? 0 : sr * 100;
+    return `<tr>
+      <td class="gw">${i.issuer}</td>
+      <td><div class="bar"><i style="width:${width}%;background:${colour}"></i></div></td>
+      <td class="num">${i.routed}</td>
+      <td class="num" style="color:${colour}">${pct(sr)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderConstraints(state) {
+  if (!state.constraints.length) {
+    $("cons").innerHTML = `<pre>None. An investigation installs one when it finds a path worth avoiding.</pre>`;
+    return;
+  }
+  $("cons").innerHTML = state.constraints.map(c => `<pre>avoid <b>${c.gateway}</b> for ${c.issuer || "ALL traffic"}
+  expires at tick ${c.expires_tick}   confidence ${c.confidence.toFixed(2)}   canary ${(c.canary_rate * 100).toFixed(0)}%
+  ${c.reason}</pre>`).join("");
+}
+
+function renderFlow(state) {
+  const gws = state.gateways, n = gws.length;
+  const L = 130, M = 470, R = 830, top = 40, gap = 46;
+  let svg = `<defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="2.4"
+    orient="auto"><path d="M0,0 L0,4.8 L6,2.4 z" fill="#3d4753"/></marker></defs>`;
+
+  svg += `<rect x="${L - 78}" y="${top + 42}" width="150" height="60" rx="8"
+    fill="#1d222a" stroke="#2a313b"/>
+    <text x="${L - 3}" y="${top + 68}" fill="#e6eaf0" font-size="13"
+      text-anchor="middle" font-weight="600">Transactions</text>
+    <text x="${L - 3}" y="${top + 87}" fill="#8b97a8" font-size="11"
+      text-anchor="middle">${state.issuers.length} issuing banks</text>`;
+
+  svg += `<rect x="${M - 88}" y="${top + 34}" width="176" height="76" rx="8"
+    fill="#1d222a" stroke="${state.constraints.length ? "#63252a" : "#2a313b"}"/>
+    <text x="${M}" y="${top + 60}" fill="#e6eaf0" font-size="13"
+      text-anchor="middle" font-weight="600">Constraint layer</text>
+    <text x="${M}" y="${top + 79}" fill="#8b97a8" font-size="11" text-anchor="middle">
+      ${state.constraints.length ? state.constraints.length + " active" : "no constraints"}</text>
+    <text x="${M}" y="${top + 96}" fill="#5d6875" font-size="10" text-anchor="middle">
+      then Thompson sampling</text>`;
+
+  svg += `<line x1="${L + 74}" y1="${top + 72}" x2="${M - 92}" y2="${top + 72}"
+    stroke="#3d4753" stroke-width="1.5" marker-end="url(#a)"/>`;
+
+  gws.forEach((g, i) => {
+    const y = top + i * gap;
+    const blocked = g.blocked_for.length > 0;
+    const broken = !!g.injected_fault;
+    const stroke = broken ? "#63252a" : blocked ? "#6b5313" : "#2a313b";
+    const share = shareFor(g.name);
+    svg += `<line x1="${M + 92}" y1="${top + 72}" x2="${R - 8}" y2="${y + 15}"
+      stroke="${blocked ? "#63252a" : "#3d4753"}" stroke-width="${
+        share === null ? 1 : Math.max(1, Math.min(7, share * 18))}"
+      stroke-dasharray="${blocked ? "4 3" : "0"}" opacity="${blocked ? .8 : .9}"/>`;
+    svg += `<rect x="${R}" y="${y}" width="220" height="31" rx="6"
+      fill="#1d222a" stroke="${stroke}"/>
+      <text x="${R + 11}" y="${y + 20}" fill="#e6eaf0" font-size="12"
+        font-family="ui-monospace,monospace">${g.name}</text>
+      <text x="${R + 209}" y="${y + 20}" fill="${
+        broken ? "#f85149" : blocked ? "#d29922" : "#8b97a8"}" font-size="11"
+        text-anchor="end" font-family="ui-monospace,monospace">${
+        broken ? "BROKEN" : blocked ? "BLOCKED" : pct(g.posterior_sr)}</text>`;
+  });
+  svg += `<text x="${R + 110}" y="${top + n * gap + 18}" fill="#5d6875" font-size="11"
+    text-anchor="middle">line thickness = share of last batch</text>`;
+  $("flow").innerHTML = svg;
+}
+
+async function refresh() {
+  const state = await api("/simulate/state");
+  renderBackends(state); renderStats(state); renderGateways(state);
+  renderConstraints(state); renderFlow(state);
+  if (!$("gw").options.length) {
+    $("gw").innerHTML = state.gateways.map(g => `<option>${g.name}</option>`).join("");
+    $("iss").innerHTML = state.issuers.map(i => `<option>${i}</option>`).join("")
+      + `<option value="">every issuer</option>`;
+  }
+  // Breaking a gateway the router has already abandoned demonstrates nothing,
+  // so follow the traffic until the operator picks a target themselves.
+  if (!gwTouched && lastBatch) {
+    $("gw").value = lastBatch.per_gateway.reduce((a, b) => b.share > a.share ? b : a).gateway;
+  }
+  return state;
+}
+
+$("send").onclick = async () => {
+  const count = Number($("count").value) || 500;
+  busy(true, `Routing ${count} transactions&hellip;`);
+  try {
+    lastBatch = await api("/simulate/traffic", {count});
+    syncLookback(await refresh()); renderIssuers();
+    $("stats").classList.add("flash"); setTimeout(() => $("stats").classList.remove("flash"), 600);
+    $("lastAction").innerHTML =
+      `Routed <b>${lastBatch.routed}</b> in ${lastBatch.wall_seconds}s of wall time,
+       spanning <b>${lastBatch.minutes_simulated} simulated minutes</b> &mdash; success rate
+       <b>${pct(lastBatch.success_rate)}</b>${lastBatch.blocked_decisions
+        ? `, ${lastBatch.blocked_decisions} decisions had a gateway removed by a constraint` : ""}.`;
+  } catch (e) { $("lastAction").innerHTML = `<span style="color:var(--bad)">${e.message}</span>`; }
+  busy(false);
+};
+
+$("gw").onchange = () => { gwTouched = true; };
+$("lookback").oninput = () => { lookbackTouched = true; };
+
+$("break").onclick = async () => {
+  const gateway = $("gw").value, issuer = $("iss").value || null;
+  busy(true, "Injecting fault&hellip;");
+  try {
+    const r = await api("/simulate/incident", {gateway, issuer, severity: 0.08});
+    const st = await refresh();
+    incidentTick = st.tick;
+    syncLookback(st);
+    $("lastAction").innerHTML = `<b>${gateway}</b> now fails for
+      <b>${issuer || "all traffic"}</b>. ${r.note} Send traffic to see it.`;
+  } catch (e) { $("lastAction").innerHTML = `<span style="color:var(--bad)">${e.message}</span>`; }
+  busy(false);
+};
+
+$("heal").onclick = async () => {
+  busy(true, "Healing&hellip;");
+  const r = await api("/simulate/incident/clear");
+  await refresh();
+  $("lastAction").innerHTML = `Healed ${r.incidents_removed} gateway(s). Constraints are
+    left in place on purpose &mdash; they expire on their TTL, and the canary traffic is
+    how the router notices the recovery.`;
+  busy(false);
+};
+
+$("reset").onclick = async () => {
+  busy(true, "Resetting&hellip;");
+  await api("/simulate/reset");
+  lastBatch = null;
+  incidentTick = null; lookbackTouched = false; gwTouched = false;
+  $("lookback").value = 60;
+  $("issbody").innerHTML = `<tr><td colspan="4" style="color:var(--dim)">Send traffic to populate.</td></tr>`;
+  $("diag").innerHTML = `<pre>Not run yet.</pre>`;
+  await refresh();
+  $("lastAction").innerHTML = "Fresh router, no constraints, no faults.";
+  busy(false);
+};
+
+$("investigate").onclick = async () => {
+  busy(true, "Investigating&hellip;");
+  $("diag").innerHTML = `<pre>Reading telemetry&hellip;</pre>`;
+  try {
+    const minutes = Math.max(5, Number($("lookback").value) || 60);
+    const r = await api(`/investigate?lookback_minutes=${minutes}`, {});
+    const d = r.diagnosis;
+    if (!d) {
+      $("diag").innerHTML = `<pre>No diagnosis: ${r.stop_reason}</pre>`;
+    } else {
+      const scoped = d.affected_issuer ? ` / ${d.affected_issuer}` : "";
+      const ok = d.scope !== "no_incident";
+      $("diag").innerHTML =
+        `<div class="verdict ${ok ? "bad" : "ok"}">${d.scope.toUpperCase()}${
+          d.primary_gateway ? " on " + d.primary_gateway + scoped : ""}
+          &nbsp;<span style="color:var(--muted);font-weight:400">confidence ${
+          d.confidence.toFixed(2)}</span></div>
+         <pre>${d.summary}${d.scope === "no_incident" ? `
+
+Nothing to act on. Usually this means the bandit already moved the traffic on
+its own: it needs no diagnosis to abandon a gateway, only to abandon one
+selectively. Break a busy gateway and investigate within a batch or two.` : ""}
+
+${(d.evidence || []).map(e => "  • " + e).join("\n")}
+
+action: ${d.recommended_action}
+tool calls: ${r.tool_calls}
+window: last ${minutes} simulated minutes
+constraint installed: ${r.constraint_installed || "none — the finding did not justify moving traffic"}</pre>${
+  d.scope === "single_gateway" ? `<div class="hint">Gateway-wide rather than issuer-scoped:
+  inside this window no single issuer cleared the 30-transaction minimum, so there was not
+  enough evidence to blame one. That threshold is deliberate — below it a success rate is
+  noise. Set the window to cover the traffic sent since the fault and run it again.</div>`
+  : ""}`;
+    }
+    await refresh();
+    $("lastAction").innerHTML = r.constraint_installed
+      ? "Constraint installed. Send traffic again and watch that issuer route elsewhere."
+      : "Investigation complete.";
+  } catch (e) {
+    $("diag").innerHTML = `<pre style="color:var(--bad)">${e.message}</pre>`;
+    $("lastAction").innerHTML = `<span style="color:var(--bad)">${e.message}</span>`;
+  }
+  busy(false);
+};
+
+refresh();
+</script>
+</body>
+</html>
